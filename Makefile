@@ -3,7 +3,7 @@
 FC      = gfortran
 CC      = gcc
 CFLAGS  = -g -fPIC -I/usr/include/X11
-LDFLAGS = -lXm -lXt -lX11 -lXpm
+LDFLAGS = -lXm -lXt -lX11 -lXpm -lGL -lGLU -lm
 TARGET  = PSLIB_TEST
 OBJS    = PSLib.o
 SRCF    = main.f

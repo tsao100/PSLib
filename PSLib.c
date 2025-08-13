@@ -14,6 +14,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdbool.h>
+#include <GL/gl.h>
+#include <GL/glx.h>
 
 typedef struct {
     double offsetX, offsetY;
@@ -29,6 +31,12 @@ typedef struct {
 
 static AppWidgets app;
 static ViewState view = {400.0, 300.0, 1.0, 0, 0, 0, NULL};
+
+/* Store GL info */
+static Display     *g_dpy;
+static XVisualInfo *g_vi;
+static GLXContext   g_ctx;
+static Window       g_win;
 
 /* --- Utility functions --- */
 static char *trim(char *str) {
@@ -431,6 +439,65 @@ void ps_draw_line_(int *x1, int *y1, int *x2, int *y2) {
     XFreeGC(dpy, gc);
 }
 
+/* ===== Drawing callbacks ===== */
+static void realize_cb(Widget w, XtPointer client, XtPointer call) {
+    g_dpy = XtDisplay(w);
+    g_win = XtWindow(w);
+
+    g_ctx = glXCreateContext(g_dpy, g_vi, NULL, True);
+    glXMakeCurrent(g_dpy, g_win, g_ctx);
+
+    glEnable(GL_DEPTH_TEST);
+}
+
+static void expose_cb(Widget w, XtPointer client, XtPointer call) {
+    glViewport(0, 0, 800, 600);
+    glClearColor(0.2, 0.3, 0.4, 1.0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glBegin(GL_TRIANGLES);
+        glColor3f(1,0,0); glVertex2f(-0.5, -0.5);
+        glColor3f(0,1,0); glVertex2f( 0.5, -0.5);
+        glColor3f(0,0,1); glVertex2f( 0.0,  0.5);
+    glEnd();
+
+    glXSwapBuffers(g_dpy, g_win);
+}
+
+
+/* ===== In your UI build function ===== */
+void build_ui(Widget parent) {
+    int attribs[] = { GLX_RGBA, GLX_DOUBLEBUFFER, GLX_DEPTH_SIZE, 16, None };
+    g_vi = glXChooseVisual(XtDisplay(parent), DefaultScreen(XtDisplay(parent)), attribs);
+    if (!g_vi) {
+        fprintf(stderr, "No suitable GLX visual\n");
+        exit(1);
+    }
+    Colormap cmap = XCreateColormap(XtDisplay(parent),
+                                    RootWindow(XtDisplay(parent), g_vi->screen),
+                                    g_vi->visual, AllocNone);
+
+    /* --- Drawing area between toolbar and cmd input --- */
+    app.drawArea = XtVaCreateManagedWidget(
+        "drawingArea",
+        xmDrawingAreaWidgetClass, parent,
+        XmNtopAttachment,    XmATTACH_WIDGET,
+        XmNtopWidget,        app.toolBar,
+        XmNleftAttachment,   XmATTACH_FORM,
+        XmNrightAttachment,  XmATTACH_FORM,
+        XmNbottomAttachment, XmATTACH_WIDGET,
+        XmNbottomWidget,     app.cmdInput,
+        XmNvisual,           g_vi->visual,
+        XmNcolormap,         cmap,
+        XmNdepth,            g_vi->depth,
+        NULL
+    );
+
+    XtAddCallback(app.drawArea, XmNrealizeCallback, realize_cb, NULL);
+    XtAddCallback(app.drawArea, XmNexposeCallback,  expose_cb,  NULL);
+}
+
+
 // start_gui_
 void start_gui_() {
     int argc = 0;
@@ -485,14 +552,7 @@ void start_gui_() {
     XtAddCallback(app.cmdInput, XmNactivateCallback, command_input_cb, NULL);
 
     // --- Drawing area between toolbar and cmd input ---
-    app.drawArea = XtVaCreateManagedWidget("drawingArea", xmDrawingAreaWidgetClass, app.form,
-        XmNtopAttachment, XmATTACH_WIDGET,
-        XmNtopWidget, app.toolBar,
-        XmNleftAttachment, XmATTACH_FORM,
-        XmNrightAttachment, XmATTACH_FORM,
-        XmNbottomAttachment, XmATTACH_WIDGET,
-        XmNbottomWidget, app.cmdInput,
-        NULL);
+    build_ui(app.form);
 
     // Set up event handlers and callbacks
     view.status_label = app.statusBar;
