@@ -1,0 +1,12 @@
+MENU:FILE:File 
+ITEM:FILE:EXIT:Exit
+
+MENU:DRAW:Draw
+ITEM:DRAW:LINE:Line
+ITEM:DRAW:ARC:Arc
+ITEM:DRAW:RECT:Rect
+
+TOOLBAR:LINE:icons/line.xpm
+TOOLBAR:ARC:icons/arc.xpm
+TOOLBAR:RECT:icons/rect.xpm
+TOOLBAR:EXIT:icons/exit.xpm
