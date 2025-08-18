@@ -8,7 +8,7 @@
       END
 
       SUBROUTINE ON_LINE
-        INTEGER X1, Y1, X2, Y2
+        REAL X1, Y1, X2, Y2
   
         PRINT *, 'Click first point...'
         CALL PS_GETPOINT('Click first point...', X1, Y1, 0)

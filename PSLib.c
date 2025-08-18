@@ -78,7 +78,7 @@ void register_action_(char *name, ActionFunc func, int name_len) {
         cname[i] = '\0';
 
     strncpy(action_table[action_count].name, cname, 31);
-    action_table[action_count].func = *func;
+    action_table[action_count].func = func;
     action_count++;
    }
 
@@ -508,7 +508,7 @@ void start_gui_() {
 
 
 static bool has_base_point = false;
-static double base_sx, base_sy;
+static int base_sx, base_sy;
 
 void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt_len)
 {
@@ -529,8 +529,7 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
     // Setup base point if provided
     has_base_point = (*has_start != 0);
     if (has_base_point) {
-        base_sx = *x ;
-        base_sy = *y ;
+        world_to_screen(*x, *y, &base_sx, &base_sy);
     }
 
     // Wait for event
