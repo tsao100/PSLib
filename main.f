@@ -1,14 +1,15 @@
       PROGRAM PSLIB_TEST
         EXTERNAL START_GUI, REGISTER_ACTION
         EXTERNAL ON_LINE
-
+      
         CALL REGISTER_ACTION('LINE', ON_LINE)
 
         CALL START_GUI
       END
 
       SUBROUTINE ON_LINE
-        REAL X1, Y1, X2, Y2
+        EXTERNAL PS_GETPOINT, PS_DRAW_LINE
+        DOUBLE PRECISION X1, Y1, X2, Y2
   
         PRINT *, 'Click first point...'
         CALL PS_GETPOINT('Click first point...', X1, Y1, 0)

@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#define _POSIX_C_SOURCE 200809L
 #include <string.h>
 #include <ctype.h>
 #include <stdbool.h>
@@ -39,6 +40,15 @@ static char *trim(char *str) {
     end[1] = '\0';
     return str;
 }
+
+static char *xstrdup(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *p = (char *)malloc(n);
+    if (!p) { perror("malloc"); abort(); }
+    memcpy(p, s, n);
+    return p;
+}
+
 
 /* --- Coordinate transforms --- */
 void screen_to_world(int x, int y, double *wx, double *wy) {
@@ -332,14 +342,7 @@ static Widget create_menu_from_file(Widget parent, const char *filename) {
                 }
             }
             if (!menu) continue;
- 
- 
- 
- 
- 
- 
- 
- 
+
             Widget item;
             item = XmCreatePushButton(menu, item_id, NULL, 0);
             XtVaSetValues(item, XmNlabelString, XmStringCreateLocalized(label), NULL);
@@ -391,7 +394,9 @@ static Widget create_toolbar_from_file(Widget parent, const char *filename) {
                 XmStringFree(xm_label);
                 XtManageChild(btn);
 
-                XtAddCallback(btn, XmNactivateCallback, toolbar_button_cb, strdup(menu_id));
+                ;XtAddCallback(btn, XmNactivateCallback, toolbar_button_cb, strdup(menu_id));
+                XtAddCallback(btn, XmNactivateCallback, toolbar_button_cb, (XtPointer)xstrdup(menu_id));
+
             }
         }
     }
@@ -421,13 +426,17 @@ void ps_wait_click_(int *x, int *y) {
     }
 }
 
-void ps_draw_line_(int *x1, int *y1, int *x2, int *y2) {
+void ps_draw_line_(double *x1, double *y1, double *x2, double *y2) {
     Display *dpy = XtDisplay(app.drawArea);
     Window win = XtWindow(app.drawArea);
+    int sx1, sy1, sx2, sy2;
+    // Convert world coordinates to screen coordinates
+    world_to_screen(*x1, *y1, &sx1, &sy1);
+    world_to_screen(*x2, *y2, &sx2, &sy2);  
 
     GC gc = XCreateGC(dpy, win, 0, NULL);
     XSetForeground(dpy, gc, BlackPixel(dpy, DefaultScreen(dpy)));
-    XDrawLine(dpy, win, gc, *x1, *y1, *x2, *y2);
+    XDrawLine(dpy, win, gc, sx1, sy1, sx2, sy2);
     XFreeGC(dpy, gc);
 }
 
@@ -527,10 +536,12 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
         XmTextFieldSetString(app.cmdInput, local_prompt);
 
     // Setup base point if provided
+    double x1 = 0, y1 = 0;
+    
     has_base_point = (*has_start != 0);
     if (has_base_point) {
-        world_to_screen(*x, *y, &base_sx, &base_sy);
-    }
+        x1 = *x; y1 = *y;
+        }
 
     // Wait for event
     XEvent event;
@@ -564,6 +575,7 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
 
             int mx = event.xmotion.x;
             int my = event.xmotion.y;
+            world_to_screen(x1, y1, &base_sx, &base_sy);
 
             XDrawLine(dpy, win, gc, base_sx, base_sy, mx, my);
         }
