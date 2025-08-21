@@ -15,6 +15,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdbool.h>
+#include <X11/cursorfont.h>
 
 typedef struct {
     double offsetX, offsetY;
@@ -158,13 +159,13 @@ void redraw(Widget w, XtPointer client_data, XtPointer call_data) {
                 XDrawString(dpy, win, gc, x0 + 6, sy + 5, label, strlen(label));
         }
     }
-
+/* Here put the entities redraw function.
     double wx = 50, wy = 50;
     int sx, sy;
     world_to_screen(wx, wy, &sx, &sy);
     int sz = (int)(30 * view.scale);
     XDrawRectangle(dpy, win, gc, sx, sy, sz, sz);
-
+*/
     if (font) XFreeFont(dpy, font);
     XFreeGC(dpy, gc);
 }
@@ -512,6 +513,10 @@ void start_gui_() {
 
     // Realize and run
     XtRealizeWidget(app.top);
+    Display *dpy = XtDisplay(app.drawArea);
+    Window win = XtWindow(app.drawArea);
+    Cursor cross = XCreateFontCursor(dpy, XC_crosshair);
+    XDefineCursor(dpy, win, cross);
     XtAppMainLoop(appContext);
 }
 
