@@ -6,6 +6,7 @@
 #include <Xm/PushB.h>
 #include <Xm/TextF.h>
 #include <Xm/CascadeB.h>
+#include <Xm/FileSB.h>
 #include <X11/Xlib.h>
 #include <X11/xpm.h>
 #include <stdio.h>
@@ -16,6 +17,7 @@
 #include <ctype.h>
 #include <stdbool.h>
 #include <X11/cursorfont.h>
+#include <stdint.h>
 
 typedef struct {
     double offsetX, offsetY;
@@ -29,8 +31,84 @@ typedef struct {
     Widget top, form, menuBar, toolBar, drawArea, statusBar, cmdInput;
 } AppWidgets;
 
+typedef enum {
+    ENTITY_LINE,
+    ENTITY_ARC,
+    ENTITY_POLYLINE
+    // Extend later...
+} EntityType;
+
+typedef struct {
+    double x1, y1, x2, y2;
+} LineEntity;
+
+typedef struct {
+    double cx, cy;    // center
+    double r;         // radius
+    double startAng;  // radians
+    double endAng;    // radians
+} ArcEntity;
+
+typedef struct {
+    int npts;
+    double *x;
+    double *y;
+} PolylineEntity;
+
+typedef struct Entity {
+    EntityType type;
+    union {
+        LineEntity line;
+        ArcEntity arc;
+        PolylineEntity pline;
+    } data;
+    struct Entity *next;
+} Entity;
+
+static Entity *entity_list = NULL;   // head of linked list
+Entity* add_line(double x1, double y1, double x2, double y2) {
+    Entity *e = (Entity *)malloc(sizeof(Entity));
+    e->type = ENTITY_LINE;
+    e->data.line.x1 = x1;
+    e->data.line.y1 = y1;
+    e->data.line.x2 = x2;
+    e->data.line.y2 = y2;
+    e->next = entity_list;
+    entity_list = e;
+    return e;
+}
+
+Entity* add_arc(double cx, double cy, double r, double a1, double a2) {
+    Entity *e = (Entity *)malloc(sizeof(Entity));
+    e->type = ENTITY_ARC;
+    e->data.arc.cx = cx;
+    e->data.arc.cy = cy;
+    e->data.arc.r = r;
+    e->data.arc.startAng = a1;
+    e->data.arc.endAng = a2;
+    e->next = entity_list;
+    entity_list = e;
+    return e;
+}
+
+Entity* add_polyline(int npts, double *x, double *y) {
+    Entity *e = (Entity *)malloc(sizeof(Entity));
+    e->type = ENTITY_POLYLINE;
+    e->data.pline.npts = npts;
+    e->data.pline.x = (double*)malloc(npts * sizeof(double));
+    e->data.pline.y = (double*)malloc(npts * sizeof(double));
+    memcpy(e->data.pline.x, x, npts * sizeof(double));
+    memcpy(e->data.pline.y, y, npts * sizeof(double));
+    e->next = entity_list;
+    entity_list = e;
+    return e;
+}
+
+
 static AppWidgets app;
 static ViewState view = {400.0, 300.0, 1.0, 0, 0, 0, NULL};
+static char current_filename[256] = "Untitled";
+
 
 /* --- Utility functions --- */
 static char *trim(char *str) {
@@ -166,6 +244,37 @@ void redraw(Widget w, XtPointer client_data, XtPointer call_data) {
     int sz = (int)(30 * view.scale);
     XDrawRectangle(dpy, win, gc, sx, sy, sz, sz);
 */
+    // Redraw all stored entities
+    Entity *e = entity_list;
+    while (e) {
+        if (e->type == ENTITY_LINE) {
+            int sx1, sy1, sx2, sy2;
+            world_to_screen(e->data.line.x1, e->data.line.y1, &sx1, &sy1);
+            world_to_screen(e->data.line.x2, e->data.line.y2, &sx2, &sy2);
+            XDrawLine(dpy, win, gc, sx1, sy1, sx2, sy2);
+        }
+        else if (e->type == ENTITY_ARC) {
+            int scx, scy;
+            world_to_screen(e->data.arc.cx, e->data.arc.cy, &scx, &scy);
+            int r = (int)(e->data.arc.r * view.scale);
+            int ang1 = (int)(e->data.arc.startAng * 64 * 180 / M_PI);
+            int ang2 = (int)((e->data.arc.endAng - e->data.arc.startAng) * 64 * 180 / M_PI);
+            XDrawArc(dpy, win, gc, scx - r, scy - r, 2*r, 2*r, ang1, ang2);
+        }
+        else if (e->type == ENTITY_POLYLINE) {
+            XPoint *pts = (XPoint*)malloc(e->data.pline.npts * sizeof(XPoint));
+            for (int i=0; i<e->data.pline.npts; i++) {
+                int sx, sy;
+                world_to_screen(e->data.pline.x[i], e->data.pline.y[i], &sx, &sy);
+                pts[i].x = (short)sx;
+                pts[i].y = (short)sy;
+            }
+            XDrawLines(dpy, win, gc, pts, e->data.pline.npts, CoordModeOrigin);
+            free(pts);
+        }
+        e = e->next;
+    }
+
     if (font) XFreeFont(dpy, font);
     XFreeGC(dpy, gc);
 }
@@ -395,8 +504,8 @@ static Widget create_toolbar_from_file(Widget parent, const char *filename) {
                 XmStringFree(xm_label);
                 XtManageChild(btn);
 
-                ;XtAddCallback(btn, XmNactivateCallback, toolbar_button_cb, strdup(menu_id));
-                XtAddCallback(btn, XmNactivateCallback, toolbar_button_cb, (XtPointer)xstrdup(menu_id));
+                XtAddCallback(btn, XmNactivateCallback, toolbar_button_cb, strdup(menu_id));
+                //XtAddCallback(btn, XmNactivateCallback, toolbar_button_cb, (XtPointer)xstrdup(menu_id));
 
             }
         }
@@ -427,7 +536,7 @@ void ps_wait_click_(int *x, int *y) {
     }
 }
 
-void ps_draw_line_(double *x1, double *y1, double *x2, double *y2) {
+/* void ps_draw_line_(double *x1, double *y1, double *x2, double *y2) {
     Display *dpy = XtDisplay(app.drawArea);
     Window win = XtWindow(app.drawArea);
     int sx1, sy1, sx2, sy2;
@@ -439,6 +548,22 @@ void ps_draw_line_(double *x1, double *y1, double *x2, double *y2) {
     XSetForeground(dpy, gc, BlackPixel(dpy, DefaultScreen(dpy)));
     XDrawLine(dpy, win, gc, sx1, sy1, sx2, sy2);
     XFreeGC(dpy, gc);
+}
+ */
+
+void ps_draw_line_(double *x1, double *y1, double *x2, double *y2) {
+    add_line(*x1, *y1, *x2, *y2);
+    redraw(app.drawArea, NULL, NULL);
+}
+
+static void set_window_title(const char *fname) {
+    if (!app.top) return;
+    char buf[512];
+    snprintf(buf, sizeof(buf), "PSLib Sample App - %s", fname);
+    XtVaSetValues(app.top,
+        XmNtitle,    buf,
+        XmNiconName, buf,
+        NULL);
 }
 
 // start_gui_
@@ -517,6 +642,9 @@ void start_gui_() {
     Window win = XtWindow(app.drawArea);
     Cursor cross = XCreateFontCursor(dpy, XC_crosshair);
     XDefineCursor(dpy, win, cross);
+
+    set_window_title(current_filename);
+
     XtAppMainLoop(appContext);
 }
 
@@ -591,4 +719,157 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
     if (app.cmdInput)
         XmTextFieldSetString(app.cmdInput, "");
 }
+
+void ps_save_entities_(char *filename, int filename_len) {
+    char fname[256];
+    int len = (filename_len < 255) ? filename_len : 255;
+    strncpy(fname, filename, len);
+    fname[len] = '\0';
+
+    FILE *f = fopen(fname, "w");
+    if (!f) {
+        perror("fopen save");
+        return;
+    }
+
+    for (Entity *e = entity_list; e; e = e->next) {
+        if (e->type == ENTITY_LINE) {
+            fprintf(f, "LINE %.15g %.15g %.15g %.15g\n",
+                    e->data.line.x1, e->data.line.y1,
+                    e->data.line.x2, e->data.line.y2);
+        } else if (e->type == ENTITY_ARC) {
+            fprintf(f, "ARC %.15g %.15g %.15g %.15g %.15g\n",
+                    e->data.arc.cx, e->data.arc.cy,
+                    e->data.arc.r, e->data.arc.startAng, e->data.arc.endAng);
+        } else if (e->type == ENTITY_POLYLINE) {
+            fprintf(f, "POLYLINE %d", e->data.pline.npts);
+            for (int i=0; i<e->data.pline.npts; i++) {
+                fprintf(f, " %.15g %.15g",
+                        e->data.pline.x[i], e->data.pline.y[i]);
+            }
+            fprintf(f, "\n");
+        }
+    }
+
+    fclose(f);
+    strncpy(current_filename, fname, sizeof(current_filename)-1);
+    current_filename[sizeof(current_filename)-1] = '\0';
+    set_window_title(current_filename);
+}
+
+
+
+static void free_entities() {
+    Entity *e = entity_list;
+    while (e) {
+        Entity *next = e->next;
+        if (e->type == ENTITY_POLYLINE) {
+            free(e->data.pline.x);
+            free(e->data.pline.y);
+        }
+        free(e);
+        e = next;
+    }
+    entity_list = NULL;
+}
+
+
+
+void ps_load_entities_(char *filename, int filename_len) {
+    char fname[256];
+    int len = (filename_len < 255) ? filename_len : 255;
+    strncpy(fname, filename, len);
+    fname[len] = '\0';
+
+    FILE *f = fopen(fname, "r");
+    if (!f) {
+        perror("fopen load");
+        return;
+    }
+
+    free_entities();
+
+    char type[32];
+    while (fscanf(f, "%31s", type) == 1) {
+        if (strcmp(type, "LINE") == 0) {
+            double x1,y1,x2,y2;
+            if (fscanf(f,"%lf %lf %lf %lf",&x1,&y1,&x2,&y2)==4)
+                add_line(x1,y1,x2,y2);
+        } else if (strcmp(type, "ARC") == 0) {
+            double cx,cy,r,a1,a2;
+            if (fscanf(f,"%lf %lf %lf %lf %lf",&cx,&cy,&r,&a1,&a2)==5)
+                add_arc(cx,cy,r,a1,a2);
+        } else if (strcmp(type, "POLYLINE") == 0) {
+            int n;
+            if (fscanf(f,"%d",&n)==1 && n>1) {
+                double *x=(double*)malloc(n*sizeof(double));
+                double *y=(double*)malloc(n*sizeof(double));
+                for(int i=0;i<n;i++)
+                    fscanf(f,"%lf %lf",&x[i],&y[i]);
+                add_polyline(n,x,y);
+                free(x); free(y);
+            }
+        }
+    }
+
+    fclose(f);
+    redraw(app.drawArea,NULL,NULL);
+    strncpy(current_filename, fname, sizeof(current_filename)-1);
+    current_filename[sizeof(current_filename)-1] = '\0';
+    set_window_title(current_filename);
+}
+
+static void file_ok_cb(Widget w, XtPointer client_data, XtPointer call_data) {
+    XmFileSelectionBoxCallbackStruct *cbs =
+        (XmFileSelectionBoxCallbackStruct*)call_data;
+    char *filename = NULL;
+
+    if (!XmStringGetLtoR(cbs->value, XmFONTLIST_DEFAULT_TAG, &filename))
+        return;
+
+    strncpy(current_filename, filename, sizeof(current_filename)-1);
+    current_filename[sizeof(current_filename)-1] = '\0';
+
+    if ((intptr_t)client_data == 1) {
+        // SAVE
+        int len = strlen(filename);
+        ps_save_entities_(filename, len);
+    } else {
+        // LOAD
+        int len = strlen(filename);
+        ps_load_entities_(filename, len);
+    }
+    XtFree(filename);
+    XtUnmanageChild(w);  // close dialog
+}
+
+void popup_file_dialog(int save) {
+    Widget dialog = XmCreateFileSelectionDialog(app.top, "fileDialog", NULL, 0);
+    XtAddCallback(dialog, XmNokCallback, file_ok_cb, (XtPointer)(intptr_t)save);
+    XtAddCallback(dialog, XmNcancelCallback, (XtCallbackProc)XtUnmanageChild, NULL);
+    XtManageChild(dialog);
+}
+
+void popup_file_dialog_(int *save) {
+    popup_file_dialog(*save);   // call the actual implementation
+}
+
+void ps_save_current_() {
+    if (strcmp(current_filename, "Untitled") == 0) {
+        // If we don't have a real file name yet → open Save As dialog
+        popup_file_dialog(1);
+    set_window_title(current_filename);
+    } else {
+        int len = strlen(current_filename);
+        ps_save_entities_(current_filename, len);
+    }
+}
+
+void ps_new_drawing_() {
+    free_entities();
+    strcpy(current_filename, "Untitled");
+    redraw(app.drawArea, NULL, NULL);
+    set_window_title(current_filename);
+}
+
 
