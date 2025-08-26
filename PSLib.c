@@ -670,13 +670,11 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
 
     // Setup base point if provided
     double x1 = 0, y1 = 0;
-    
     has_base_point = (*has_start != 0);
     if (has_base_point) {
         x1 = *x; y1 = *y;
-        }
+    }
 
-    // Wait for event
     XEvent event;
     bool done = false;
 
@@ -687,18 +685,17 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
             if (event.xbutton.button == Button1) {
                 int mx = event.xbutton.x;
                 int my = event.xbutton.y;
-                double wx, wy;
                 screen_to_world(mx, my, x, y);
                 done = true;
             }
             else if (event.xbutton.button == Button4 || event.xbutton.button == Button5) {
-                int x = event.xbutton.x, y = event.xbutton.y;
+                int sx = event.xbutton.x, sy = event.xbutton.y;
                 double wx, wy;
-                screen_to_world(x, y, &wx, &wy);
+                screen_to_world(sx, sy, &wx, &wy);
                 double zoom = (event.xbutton.button == Button4) ? 1.1 : 0.9;
                 view.scale *= zoom;
-                view.offsetX = x - wx * view.scale;
-                view.offsetY = y + wy * view.scale;
+                view.offsetX = sx - wx * view.scale;
+                view.offsetY = sy + wy * view.scale;
                 redraw(app.drawArea, NULL, NULL);
             }
         }
@@ -711,6 +708,31 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
             world_to_screen(x1, y1, &base_sx, &base_sy);
 
             XDrawLine(dpy, win, gc, base_sx, base_sy, mx, my);
+            int dx = mx - base_sx;
+            int dy = my - base_sy;
+            int r  = (int) sqrt(dx*dx + dy*dy);  // Euclidean distance
+
+            XDrawArc(dpy, win, gc,
+                    base_sx - r, base_sy - r,   // top-left corner of bounding box
+                    2*r, 2*r,                   // width and height
+                    0, 360*64); 
+        }
+        else if (event.type == KeyPress && app.cmdInput) {
+            KeySym keysym;
+            char buf[256];
+            int n = XLookupString(&event.xkey, buf, sizeof(buf) - 1, &keysym, NULL);
+            buf[n] = '\0';
+
+            if (keysym == XK_Return || keysym == XK_KP_Enter) {
+                char *text = XmTextFieldGetString(app.cmdInput);
+                double tx, ty;
+                if (sscanf(text, "%lf%*[, ]%lf", &tx, &ty) == 2) {
+                    *x = tx;
+                    *y = ty;
+                    done = true;
+                }
+                XtFree(text);
+            }
         }
 
         XtDispatchEvent(&event);
