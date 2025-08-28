@@ -11,13 +11,55 @@
 #include <X11/xpm.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "tinyspline.h"
 #include <math.h>
-#define _POSIX_C_SOURCE 200809L
 #include <string.h>
 #include <ctype.h>
 #include <stdbool.h>
 #include <X11/cursorfont.h>
 #include <stdint.h>
+
+static tsBSpline spline;
+static int spline_ready = 0;
+
+void ps_spline_new_(int *degree, int *dim, int *n_ctrlp, int *type, int *status) {
+    tsStatus stat;
+    tsError err = ts_bspline_new((size_t)(*n_ctrlp), (size_t)(*dim), (size_t)(*degree), (tsBSplineType)(*type), &spline, &stat);
+    spline_ready = (err == TS_SUCCESS);
+    *status = spline_ready ? 0 : 1;
+}
+
+void ps_spline_set_ctrlp_(double *ctrlp, int *status) {
+    if (!spline_ready) { *status=1; return; }
+    tsStatus stat;
+    tsError err = ts_bspline_set_control_points(&spline, ctrlp, &stat);
+    *status = (err == TS_SUCCESS) ? 0 : 1;
+}
+
+void ps_spline_sample_(int *sample_count, double *samples_out, int *status_out) {
+    tsReal *samples = NULL;
+    size_t actual = 0;
+    tsStatus status;
+
+    tsError err = ts_bspline_sample(&spline, (size_t)*sample_count, &samples, &actual, &status);
+    if (err != TS_SUCCESS) {
+        *status_out = status.code;
+        return;
+    }
+
+    size_t dim = ts_bspline_dimension(&spline);
+    for (size_t i = 0; i < actual * dim; i++) {
+        samples_out[i] = samples[i];
+    }
+
+    free(samples);
+    *status_out = 0;
+}
+
+void ps_spline_free_() {
+    if (spline_ready) ts_bspline_free(&spline);
+    spline_ready = 0;
+}
 
 typedef struct {
     double offsetX, offsetY;
@@ -108,7 +150,7 @@ Entity* add_polyline(int npts, double *x, double *y) {
 static AppWidgets app;
 static ViewState view = {400.0, 300.0, 1.0, 0, 0, 0, NULL};
 static char current_filename[256] = "Untitled";
-
+static int protected_len = 0; // cumulative protected text length
 
 /* --- Utility functions --- */
 static char *trim(char *str) {
@@ -566,6 +608,16 @@ static void set_window_title(const char *fname) {
         NULL);
 }
 
+void protect_prompt_cb(Widget w, XtPointer client_data, XtPointer call_data) {
+    XmTextVerifyCallbackStruct *cbs = (XmTextVerifyCallbackStruct *) call_data;
+
+    // Block edits before protected_len
+    if (cbs->startPos < protected_len) {
+        cbs->doit = False;
+        XmTextFieldSetInsertionPosition(w, protected_len);
+    }
+}
+
 // start_gui_
 void start_gui_() {
     int argc = 0;
@@ -618,6 +670,8 @@ void start_gui_() {
         XmNmarginWidth, 4,
         NULL);
     XtAddCallback(app.cmdInput, XmNactivateCallback, command_input_cb, NULL);
+    XtAddCallback(app.cmdInput, XmNmodifyVerifyCallback,
+                protect_prompt_cb, NULL);
 
     // --- Drawing area between toolbar and cmd input ---
     app.drawArea = XtVaCreateManagedWidget("drawingArea", xmDrawingAreaWidgetClass, app.form,
@@ -648,7 +702,6 @@ void start_gui_() {
     XtAppMainLoop(appContext);
 }
 
-
 static bool has_base_point = false;
 static int base_sx, base_sy;
 
@@ -658,22 +711,34 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
     Window win = XtWindow(app.drawArea);
     GC gc = XCreateGC(dpy, win, 0, NULL);
 
-    // Extract and null-terminate Fortran string
+    // Null-terminate Fortran string
     char local_prompt[256];
     int len = (prompt_len < 255) ? prompt_len : 255;
     strncpy(local_prompt, prompt, len);
     local_prompt[len] = '\0';
 
-    // Show prompt in cmdInput
-    if (app.cmdInput)
-        XmTextFieldSetString(app.cmdInput, local_prompt);
+    // --- Append prompt to cmdInput ---
+    if (app.cmdInput) {
+        char *current_text = XmTextFieldGetString(app.cmdInput);
+        char new_text[1024];
+        snprintf(new_text, sizeof(new_text), "%s%s", current_text, local_prompt);
 
-    // Setup base point if provided
-    double x1 = 0, y1 = 0;
-    has_base_point = (*has_start != 0);
-    if (has_base_point) {
-        x1 = *x; y1 = *y;
+        XmTextFieldSetString(app.cmdInput, new_text);
+
+        // Move cursor to end
+        XmTextFieldSetInsertionPosition(app.cmdInput, strlen(new_text));
+
+        // Focus to cmdInput
+        XmProcessTraversal(app.cmdInput, XmTRAVERSE_CURRENT);
+
+        protected_len += strlen(local_prompt); // update cumulative protected length
+        XtFree(current_text);
     }
+
+    // --- Setup base point if provided ---
+    double x1 = 0, y1 = 0;
+    bool has_base = (*has_start != 0);
+    if (has_base) { x1 = *x; y1 = *y; }
 
     XEvent event;
     bool done = false;
@@ -681,6 +746,12 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
     while (!done) {
         XtAppNextEvent(XtWidgetToApplicationContext(app.drawArea), &event);
 
+        // --- Auto-focus on cmdInput if any key pressed ---
+        if (event.type == KeyPress && app.cmdInput) {
+            XmProcessTraversal(app.cmdInput, XmTRAVERSE_CURRENT);
+        }
+
+        // --- Mouse input ---
         if (event.type == ButtonPress) {
             if (event.xbutton.button == Button1) {
                 int mx = event.xbutton.x;
@@ -699,24 +770,19 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
                 redraw(app.drawArea, NULL, NULL);
             }
         }
-        else if (event.type == MotionNotify && has_base_point) {
+
+        // --- Rubberband line preview ---
+        else if (event.type == MotionNotify && has_base) {
             XClearWindow(dpy, win);
             redraw(app.drawArea, NULL, NULL);
 
             int mx = event.xmotion.x;
             int my = event.xmotion.y;
             world_to_screen(x1, y1, &base_sx, &base_sy);
-
             XDrawLine(dpy, win, gc, base_sx, base_sy, mx, my);
-            int dx = mx - base_sx;
-            int dy = my - base_sy;
-            int r  = (int) sqrt(dx*dx + dy*dy);  // Euclidean distance
-
-            XDrawArc(dpy, win, gc,
-                    base_sx - r, base_sy - r,   // top-left corner of bounding box
-                    2*r, 2*r,                   // width and height
-                    0, 360*64); 
         }
+
+        // --- Keyboard coordinates input ---
         else if (event.type == KeyPress && app.cmdInput) {
             KeySym keysym;
             char buf[256];
@@ -725,12 +791,17 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
 
             if (keysym == XK_Return || keysym == XK_KP_Enter) {
                 char *text = XmTextFieldGetString(app.cmdInput);
-                double tx, ty;
-                if (sscanf(text, "%lf%*[, ]%lf", &tx, &ty) == 2) {
-                    *x = tx;
-                    *y = ty;
-                    done = true;
+
+                if ((int)strlen(text) > protected_len) {
+                    const char *coords = text + protected_len; // new input only
+                    double tx, ty;
+                    if (sscanf(coords, "%lf%*[, ]%lf", &tx, &ty) == 2) {
+                        *x = tx;
+                        *y = ty;
+                        done = true;
+                    }
                 }
+                XmTextFieldSetInsertionPosition(app.cmdInput, strlen(text));
                 XtFree(text);
             }
         }
@@ -739,7 +810,7 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
     }
 
     if (app.cmdInput)
-        XmTextFieldSetString(app.cmdInput, "");
+        XmTextFieldSetInsertionPosition(app.cmdInput, protected_len); // ensure cursor after prompt
 }
 
 void ps_save_entities_(char *filename, int filename_len) {
