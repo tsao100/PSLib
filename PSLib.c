@@ -719,20 +719,20 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
 
     // --- Append prompt to cmdInput ---
     if (app.cmdInput) {
-        char *current_text = XmTextFieldGetString(app.cmdInput);
-        char new_text[1024];
-        snprintf(new_text, sizeof(new_text), "%s%s", current_text, local_prompt);
+        protected_len =0;
+        // Directly set the new prompt text (replace, not append)
+        XmTextFieldSetString(app.cmdInput, local_prompt);
 
-        XmTextFieldSetString(app.cmdInput, new_text);
+        // Force widget to process and display the change immediately
+        XmUpdateDisplay(app.cmdInput);
+        // Move cursor to end of the new prompt
+        XmTextFieldSetInsertionPosition(app.cmdInput, strlen(local_prompt));
 
-        // Move cursor to end
-        XmTextFieldSetInsertionPosition(app.cmdInput, strlen(new_text));
-
-        // Focus to cmdInput
+        // Ensure input focus is on the command input
         XmProcessTraversal(app.cmdInput, XmTRAVERSE_CURRENT);
 
-        protected_len += strlen(local_prompt); // update cumulative protected length
-        XtFree(current_text);
+        // Protect exactly this prompt text
+        protected_len = strlen(local_prompt);
     }
 
     // --- Setup base point if provided ---
@@ -757,6 +757,10 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
                 int mx = event.xbutton.x;
                 int my = event.xbutton.y;
                 screen_to_world(mx, my, x, y);
+                done = true;
+            }
+            else if (event.xbutton.button == Button3) {  // right click cancels
+                *has_start = 0;
                 done = true;
             }
             else if (event.xbutton.button == Button4 || event.xbutton.button == Button5) {
