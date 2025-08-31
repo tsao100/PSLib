@@ -76,7 +76,8 @@ typedef struct {
 typedef enum {
     ENTITY_LINE,
     ENTITY_ARC,
-    ENTITY_POLYLINE
+    ENTITY_POLYLINE,
+    ENTITY_SPLINE
     // Extend later...
 } EntityType;
 
@@ -97,12 +98,20 @@ typedef struct {
     double *y;
 } PolylineEntity;
 
+typedef struct {
+    int n_ctrlp;       // number of control points
+    double *x;         // x coordinates
+    double *y;         // y coordinates
+    int degree;        // spline degree
+} SplineEntity;
+
 typedef struct Entity {
     EntityType type;
     union {
         LineEntity line;
         ArcEntity arc;
         PolylineEntity pline;
+        SplineEntity spline;   // <-- new member
     } data;
     struct Entity *next;
 } Entity;
@@ -146,6 +155,39 @@ Entity* add_polyline(int npts, double *x, double *y) {
     return e;
 }
 
+// --- Add a new spline entity ---
+Entity* add_spline(double *ctrlx, double *ctrly, int n_ctrlp, int degree) {
+    if (n_ctrlp <= 0) return NULL;
+
+    Entity *e = (Entity *)malloc(sizeof(Entity));
+    if (!e) return NULL;
+
+    e->type = ENTITY_SPLINE;  // make sure ENTITY_SPLINE is defined in EntityType enum
+    e->data.spline.n_ctrlp = n_ctrlp;
+    e->data.spline.degree = degree;
+
+    // allocate memory for control points
+    e->data.spline.x = (double *)malloc(sizeof(double) * n_ctrlp);
+    e->data.spline.y = (double *)malloc(sizeof(double) * n_ctrlp);
+    if (!e->data.spline.x || !e->data.spline.y) {
+        free(e->data.spline.x);
+        free(e->data.spline.y);
+        free(e);
+        return NULL;
+    }
+
+    // copy control points
+    for (int i = 0; i < n_ctrlp; i++) {
+        e->data.spline.x[i] = ctrlx[i];
+        e->data.spline.y[i] = ctrly[i];
+    }
+
+    // insert at head of list
+    e->next = entity_list;
+    entity_list = e;
+
+    return e;
+}
 
 static AppWidgets app;
 static ViewState view = {400.0, 300.0, 1.0, 0, 0, 0, NULL};
@@ -313,6 +355,46 @@ void redraw(Widget w, XtPointer client_data, XtPointer call_data) {
             }
             XDrawLines(dpy, win, gc, pts, e->data.pline.npts, CoordModeOrigin);
             free(pts);
+        }
+        else if (e->type == ENTITY_SPLINE) {
+            int sample_count = 100;
+            double *samples = malloc(sizeof(double) * 2 * sample_count); // holds x,y
+            if (!samples) goto spline_done;
+
+            // Interleave x and y control points for TinySpline
+            double *ctrlp_interleaved = malloc(sizeof(double) * 2 * e->data.spline.n_ctrlp);
+            if (!ctrlp_interleaved) { free(samples); goto spline_done; }
+
+            for (int i = 0; i < e->data.spline.n_ctrlp; i++) {
+                ctrlp_interleaved[2*i]   = e->data.spline.x[i];
+                ctrlp_interleaved[2*i+1] = e->data.spline.y[i];
+            }
+
+            int st;
+            int dim = 2;
+            int type = TS_OPENED;
+            ps_spline_new_(&e->data.spline.degree, &dim, &e->data.spline.n_ctrlp, &type, &st);
+            if (st == 0) {
+                ps_spline_set_ctrlp_(ctrlp_interleaved, &st);
+                if (st == 0) {
+                    ps_spline_sample_(&sample_count, samples, &st);
+                    if (st == 0) {
+                        int sx_prev, sy_prev, sx, sy;
+                        for (int i=0; i<sample_count; i++) {
+                            world_to_screen(samples[2*i], samples[2*i+1], &sx, &sy);
+                            if (i > 0)
+                                XDrawLine(dpy, win, gc, sx_prev, sy_prev, sx, sy);
+                            sx_prev = sx; sy_prev = sy;
+                        }
+                    }
+                }
+                ps_spline_free_();
+            }
+
+            free(samples);
+            free(ctrlp_interleaved);
+
+        spline_done:;
         }
         e = e->next;
     }
@@ -598,6 +680,49 @@ void ps_draw_line_(double *x1, double *y1, double *x2, double *y2) {
     redraw(app.drawArea, NULL, NULL);
 }
 
+// Fortran callable: draw a spline from control points
+// ctrlp: array of length 2*n_ctrlp (x0,y0,x1,y1,...)
+// n_ctrlp: number of control points
+// degree: spline degree (e.g., 3)
+// dim: dimension (2 for 2D)
+// type: 0=open,1=closed,2=periodic
+void ps_draw_spline_(double *ctrlp, int *n_ctrlp, int *degree, int *dim, int *type, int *status)
+{
+    if (*dim < 2 || *n_ctrlp <= 0) {
+        *status = 1;
+        return;
+    }
+
+    // Split ctrlp into separate x and y arrays
+    double *ctrlx = malloc(sizeof(double) * (*n_ctrlp));
+    double *ctrly = malloc(sizeof(double) * (*n_ctrlp));
+    if (!ctrlx || !ctrly) {
+        free(ctrlx); free(ctrly);
+        *status = 1;
+        return;
+    }
+
+    for (int i = 0; i < *n_ctrlp; i++) {
+        ctrlx[i] = ctrlp[i * (*dim)];       // x
+        ctrly[i] = ctrlp[i * (*dim) + 1];   // y
+    }
+
+    // Add spline to entity list
+    Entity *e = add_spline(ctrlx, ctrly, *n_ctrlp, *degree);
+    free(ctrlx);
+    free(ctrly);
+
+    if (!e) {
+        *status = 1;
+        return;
+    }
+
+    *status = 0;
+
+    // Trigger redraw to show the new spline
+    redraw(app.drawArea, NULL, NULL);
+}
+
 static void set_window_title(const char *fname) {
     if (!app.top) return;
     char buf[512];
@@ -757,6 +882,7 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
                 int mx = event.xbutton.x;
                 int my = event.xbutton.y;
                 screen_to_world(mx, my, x, y);
+                *has_start = 1;
                 done = true;
             }
             else if (event.xbutton.button == Button3) {  // right click cancels
@@ -817,45 +943,6 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
         XmTextFieldSetInsertionPosition(app.cmdInput, protected_len); // ensure cursor after prompt
 }
 
-void ps_save_entities_(char *filename, int filename_len) {
-    char fname[256];
-    int len = (filename_len < 255) ? filename_len : 255;
-    strncpy(fname, filename, len);
-    fname[len] = '\0';
-
-    FILE *f = fopen(fname, "w");
-    if (!f) {
-        perror("fopen save");
-        return;
-    }
-
-    for (Entity *e = entity_list; e; e = e->next) {
-        if (e->type == ENTITY_LINE) {
-            fprintf(f, "LINE %.15g %.15g %.15g %.15g\n",
-                    e->data.line.x1, e->data.line.y1,
-                    e->data.line.x2, e->data.line.y2);
-        } else if (e->type == ENTITY_ARC) {
-            fprintf(f, "ARC %.15g %.15g %.15g %.15g %.15g\n",
-                    e->data.arc.cx, e->data.arc.cy,
-                    e->data.arc.r, e->data.arc.startAng, e->data.arc.endAng);
-        } else if (e->type == ENTITY_POLYLINE) {
-            fprintf(f, "POLYLINE %d", e->data.pline.npts);
-            for (int i=0; i<e->data.pline.npts; i++) {
-                fprintf(f, " %.15g %.15g",
-                        e->data.pline.x[i], e->data.pline.y[i]);
-            }
-            fprintf(f, "\n");
-        }
-    }
-
-    fclose(f);
-    strncpy(current_filename, fname, sizeof(current_filename)-1);
-    current_filename[sizeof(current_filename)-1] = '\0';
-    set_window_title(current_filename);
-}
-
-
-
 static void free_entities() {
     Entity *e = entity_list;
     while (e) {
@@ -870,40 +957,95 @@ static void free_entities() {
     entity_list = NULL;
 }
 
+// Save entities as binary
+void ps_save_entities_(char *filename, int filename_len) {
+    char fname[256];
+    int len = (filename_len < 255) ? filename_len : 255;
+    strncpy(fname, filename, len);
+    fname[len] = '\0';
 
+    FILE *f = fopen(fname, "wb");
+    if (!f) { perror("fopen save"); return; }
 
+    for (Entity *e = entity_list; e; e = e->next) {
+        fwrite(&e->type, sizeof(int), 1, f);
+        switch(e->type) {
+            case ENTITY_LINE:
+                fwrite(&e->data.line, sizeof(LineEntity), 1, f);
+                break;
+            case ENTITY_ARC:
+                fwrite(&e->data.arc, sizeof(ArcEntity), 1, f);
+                break;
+            case ENTITY_POLYLINE: {
+                fwrite(&e->data.pline.npts, sizeof(int), 1, f);
+                fwrite(e->data.pline.x, sizeof(double), e->data.pline.npts, f);
+                fwrite(e->data.pline.y, sizeof(double), e->data.pline.npts, f);
+                break;
+            }
+            case ENTITY_SPLINE: {
+                fwrite(&e->data.spline.n_ctrlp, sizeof(int), 1, f);
+                fwrite(&e->data.spline.degree, sizeof(int), 1, f);
+                fwrite(e->data.spline.x, sizeof(double), e->data.spline.n_ctrlp, f);
+                fwrite(e->data.spline.y, sizeof(double), e->data.spline.n_ctrlp, f);
+                break;
+            }
+        }
+    }
+
+    fclose(f);
+    strncpy(current_filename, fname, sizeof(current_filename)-1);
+    current_filename[sizeof(current_filename)-1] = '\0';
+    set_window_title(current_filename);
+}
+
+// Load entities from binary
 void ps_load_entities_(char *filename, int filename_len) {
     char fname[256];
     int len = (filename_len < 255) ? filename_len : 255;
     strncpy(fname, filename, len);
     fname[len] = '\0';
 
-    FILE *f = fopen(fname, "r");
-    if (!f) {
-        perror("fopen load");
-        return;
-    }
+    FILE *f = fopen(fname, "rb");
+    if (!f) { perror("fopen load"); return; }
 
     free_entities();
 
-    char type[32];
-    while (fscanf(f, "%31s", type) == 1) {
-        if (strcmp(type, "LINE") == 0) {
-            double x1,y1,x2,y2;
-            if (fscanf(f,"%lf %lf %lf %lf",&x1,&y1,&x2,&y2)==4)
-                add_line(x1,y1,x2,y2);
-        } else if (strcmp(type, "ARC") == 0) {
-            double cx,cy,r,a1,a2;
-            if (fscanf(f,"%lf %lf %lf %lf %lf",&cx,&cy,&r,&a1,&a2)==5)
-                add_arc(cx,cy,r,a1,a2);
-        } else if (strcmp(type, "POLYLINE") == 0) {
+    while (!feof(f)) {
+        int type;
+        if (fread(&type, sizeof(int), 1, f) != 1) break;
+
+        if (type == ENTITY_LINE) {
+            LineEntity line;
+            if (fread(&line, sizeof(LineEntity), 1, f) == 1)
+                add_line(line.x1, line.y1, line.x2, line.y2);
+
+        } else if (type == ENTITY_ARC) {
+            ArcEntity arc;
+            if (fread(&arc, sizeof(ArcEntity), 1, f) == 1)
+                add_arc(arc.cx, arc.cy, arc.r, arc.startAng, arc.endAng);
+
+        } else if (type == ENTITY_POLYLINE) {
             int n;
-            if (fscanf(f,"%d",&n)==1 && n>1) {
-                double *x=(double*)malloc(n*sizeof(double));
-                double *y=(double*)malloc(n*sizeof(double));
-                for(int i=0;i<n;i++)
-                    fscanf(f,"%lf %lf",&x[i],&y[i]);
-                add_polyline(n,x,y);
+            if (fread(&n, sizeof(int), 1, f) != 1) break;
+            if (n > 1) {
+                double *x = malloc(n * sizeof(double));
+                double *y = malloc(n * sizeof(double));
+                if (fread(x, sizeof(double), n, f) != (size_t)n) { free(x); free(y); break; }
+                if (fread(y, sizeof(double), n, f) != (size_t)n) { free(x); free(y); break; }
+                add_polyline(n, x, y);
+                free(x); free(y);
+            }
+
+        } else if (type == ENTITY_SPLINE) {
+            int n_ctrlp, degree;
+            if (fread(&n_ctrlp, sizeof(int), 1, f) != 1) break;
+            if (fread(&degree, sizeof(int), 1, f) != 1) break;
+            if (n_ctrlp > 0) {
+                double *x = malloc(n_ctrlp * sizeof(double));
+                double *y = malloc(n_ctrlp * sizeof(double));
+                if (fread(x, sizeof(double), n_ctrlp, f) != (size_t)n_ctrlp) { free(x); free(y); break; }
+                if (fread(y, sizeof(double), n_ctrlp, f) != (size_t)n_ctrlp) { free(x); free(y); break; }
+                add_spline(x, y, n_ctrlp, degree);
                 free(x); free(y);
             }
         }

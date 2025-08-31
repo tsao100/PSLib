@@ -9,6 +9,7 @@ MENU:DRAW:Draw
 ITEM:DRAW:LINE:Line
 ITEM:DRAW:ARC:Arc
 ITEM:DRAW:RECT:Rect
+ITEM:DRAW:SPLINE:Spline
 
 TOOLBAR:LINE:icons/line.xpm
 TOOLBAR:ARC:icons/arc.xpm
