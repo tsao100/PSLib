@@ -1,3 +1,12 @@
+#Preface
+In 1993, my junior year, I took Professor Chang Shan-cheng's computer-aided design course during the first semester. The course required students to write programs using Professor Chang's PS library (Picture Shape Library) in Fortran.
+I spent a lot of time on the computer doing my homework. The air conditioning in the Civil Engineering Department's drawing workstations was so strong that even after spending a few hours there, I felt terribly cold.
+I had only taken Fortran during my freshman year, and I didn't have a strong grasp of it, so I struggled to complete the homework.
+I remember a senior from the Physics Department who was also in the course. He was very proficient in C and had successfully compiled the PS library using C.
+It's now 2025, the year of the rise of AI. Professor Chang has been very active in politics in recent years, which brought back memories of those days.
+So I did some research and searched for information. I discovered that with the help of AI, I could create a copycat version of the PS library in Linux and then use Fortran to complete the homework I hadn't completed.
+
+Chinese Translation:
 # 前言
 1993年，那一年我大三。大三第一學期我選修了張善政老師的電腦輔助設計的課程，修課的學生做作業需要使用張老師的PS library(Picture Shape library)撰寫程式，使用的程式語言是Fortran。
 我花了很多時間上機寫作業，土木系的繪圖工作站的冷氣很強，在那裡待上幾個小時後，都會覺得好冷。
