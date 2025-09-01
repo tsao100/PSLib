@@ -19,6 +19,9 @@
 #include <X11/cursorfont.h>
 #include <stdint.h>
 
+// Tolerance in screen pixels for object snap
+#define OSNAP_TOL_PIXELS 10
+
 static tsBSpline spline;
 static int spline_ready = 0;
 
@@ -384,6 +387,10 @@ static ViewState view = {400.0, 300.0, 1.0, 0, 0, 0, NULL};
 static char current_filename[256] = "Untitled";
 static int protected_len = 0; // cumulative protected text length
 
+static int osnap_enabled = 0;     // toggled with F3
+static int snap_active = 0;       // 1 if a snap point is currently under cursor
+static double snap_x, snap_y;     // snapped world coordinates
+
 /* --- Utility functions --- */
 static char *trim(char *str) {
     while (isspace(*str)) str++;
@@ -605,9 +612,86 @@ void redraw(Widget w, XtPointer client_data, XtPointer call_data) {
         e = e->next;
     }
 
+    // --- Draw snap indicator if active ---
+    if (osnap_enabled && snap_active) {
+        int sx, sy;
+        world_to_screen(snap_x, snap_y, &sx, &sy);
+        int size = 6;
+        XDrawLine(dpy, win, gc, sx-size, sy, sx+size, sy);
+        XDrawLine(dpy, win, gc, sx, sy-size, sx, sy+size);
+    }
+
     if (font) XFreeFont(dpy, font);
     XFreeGC(dpy, gc);
 }
+
+static int snap_to_entity(double wx, double wy, double *sx, double *sy) {
+    double best_dist2 = 1e30;
+    double bestx = wx, besty = wy;
+
+    for (Entity *e = entity_list; e; e = e->next) {
+        if (e->type == ENTITY_LINE) {
+            double px[2] = {e->data.line.x1, e->data.line.x2};
+            double py[2] = {e->data.line.y1, e->data.line.y2};
+            for (int i=0; i<2; i++) {
+                int sxp, syp, mx, my;
+                world_to_screen(px[i], py[i], &sxp, &syp);
+                world_to_screen(wx, wy, &mx, &my);
+                double dx = mx - sxp, dy = my - syp;
+                double d2 = dx*dx + dy*dy;
+                if (d2 < OSNAP_TOL_PIXELS*OSNAP_TOL_PIXELS && d2 < best_dist2) {
+                    best_dist2 = d2;
+                    bestx = px[i]; besty = py[i];
+                }
+            }
+        }
+        else if (e->type == ENTITY_ARC) {
+            int sxp, syp, mx, my;
+            world_to_screen(e->data.arc.cx, e->data.arc.cy, &sxp, &syp);
+            world_to_screen(wx, wy, &mx, &my);
+            double dx = mx - sxp, dy = my - syp;
+            double d2 = dx*dx + dy*dy;
+            if (d2 < OSNAP_TOL_PIXELS*OSNAP_TOL_PIXELS && d2 < best_dist2) {
+                best_dist2 = d2;
+                bestx = e->data.arc.cx; besty = e->data.arc.cy;
+            }
+        }
+        else if (e->type == ENTITY_POLYLINE) {
+            for (int i=0; i<e->data.pline.npts; i++) {
+                int sxp, syp, mx, my;
+                world_to_screen(e->data.pline.x[i], e->data.pline.y[i], &sxp, &syp);
+                world_to_screen(wx, wy, &mx, &my);
+                double dx = mx - sxp, dy = my - syp;
+                double d2 = dx*dx + dy*dy;
+                if (d2 < OSNAP_TOL_PIXELS*OSNAP_TOL_PIXELS && d2 < best_dist2) {
+                    best_dist2 = d2;
+                    bestx = e->data.pline.x[i]; besty = e->data.pline.y[i];
+                }
+            }
+        }
+        else if (e->type == ENTITY_SPLINE) {
+            for (int i=0; i<e->data.spline.n_ctrlp; i++) {
+                int sxp, syp, mx, my;
+                world_to_screen(e->data.spline.x[i], e->data.spline.y[i], &sxp, &syp);
+                world_to_screen(wx, wy, &mx, &my);
+                double dx = mx - sxp, dy = my - syp;
+                double d2 = dx*dx + dy*dy;
+                if (d2 < OSNAP_TOL_PIXELS*OSNAP_TOL_PIXELS && d2 < best_dist2) {
+                    best_dist2 = d2;
+                    bestx = e->data.spline.x[i]; besty = e->data.spline.y[i];
+                }
+            }
+        }
+    }
+
+    if (best_dist2 < 1e30) {
+        *sx = bestx;
+        *sy = besty;
+        return 1;
+    }
+    return 0;
+}
+
 
 /* --- Event Handlers --- */
 void mouse_event(Widget w, XtPointer client_data, XEvent *event, Boolean *cont) {
@@ -1036,37 +1120,62 @@ void start_gui_() {
 static bool has_base_point = false;
 static int base_sx, base_sy;
 
-void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt_len)
-{
-    Display *dpy = XtDisplay(app.drawArea);
-    Window win = XtWindow(app.drawArea);
-    GC gc = XCreateGC(dpy, win, 0, NULL);
+// --- Helpers ---
 
-    // Null-terminate Fortran string
+static void update_prompt(char *prompt, int prompt_len) {
     char local_prompt[256];
     int len = (prompt_len < 255) ? prompt_len : 255;
     strncpy(local_prompt, prompt, len);
     local_prompt[len] = '\0';
 
-    // --- Append prompt to cmdInput ---
-    if (app.cmdInput) {
-        protected_len =0;
-        // Directly set the new prompt text (replace, not append)
-        XmTextFieldSetString(app.cmdInput, local_prompt);
+    if (!app.cmdInput) return;
 
-        // Force widget to process and display the change immediately
-        XmUpdateDisplay(app.cmdInput);
-        // Move cursor to end of the new prompt
-        XmTextFieldSetInsertionPosition(app.cmdInput, strlen(local_prompt));
+    protected_len = 0;
+    XmTextFieldSetString(app.cmdInput, local_prompt);
+    XmUpdateDisplay(app.cmdInput);
+    XmTextFieldSetInsertionPosition(app.cmdInput, strlen(local_prompt));
+    XmProcessTraversal(app.cmdInput, XmTRAVERSE_CURRENT);
+    protected_len = strlen(local_prompt);
+}
 
-        // Ensure input focus is on the command input
-        XmProcessTraversal(app.cmdInput, XmTRAVERSE_CURRENT);
+static void handle_zoom(XButtonEvent *bev) {
+    int sx = bev->x, sy = bev->y;
+    double wx, wy;
+    screen_to_world(sx, sy, &wx, &wy);
 
-        // Protect exactly this prompt text
-        protected_len = strlen(local_prompt);
+    double zoom = (bev->button == Button4) ? 1.1 : 0.9;
+    view.scale *= zoom;
+    view.offsetX = sx - wx * view.scale;
+    view.offsetY = sy + wy * view.scale;
+    redraw(app.drawArea, NULL, NULL);
+}
+
+static void handle_osnap_toggle(KeySym key) {
+    if (key == XK_F3) {
+        osnap_enabled = !osnap_enabled;
+        printf("Object Snap %s\n", osnap_enabled ? "ON" : "OFF");
     }
+}
 
-    // --- Setup base point if provided ---
+static void draw_rubberband(Display *dpy, Window win, GC gc,
+                            double x1, double y1, int mx, int my) {
+    int base_sx, base_sy;
+    world_to_screen(x1, y1, &base_sx, &base_sy);
+    XDrawLine(dpy, win, gc, base_sx, base_sy, mx, my);
+}
+
+// --- Main point picker ---
+
+void ps_getpoint_(char *prompt, double *x, double *y,
+                  int *has_start, int prompt_len)
+{
+    Display *dpy = XtDisplay(app.drawArea);
+    Window win = XtWindow(app.drawArea);
+    GC gc = XCreateGC(dpy, win, 0, NULL);
+
+    update_prompt(prompt, prompt_len);
+
+    // base point (rubber band start)
     double x1 = 0, y1 = 0;
     bool has_base = (*has_start != 0);
     if (has_base) { x1 = *x; y1 = *y; }
@@ -1077,48 +1186,57 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
     while (!done) {
         XtAppNextEvent(XtWidgetToApplicationContext(app.drawArea), &event);
 
-        // --- Auto-focus on cmdInput if any key pressed ---
+        // --- Keyboard focus ---
         if (event.type == KeyPress && app.cmdInput) {
             XmProcessTraversal(app.cmdInput, XmTRAVERSE_CURRENT);
         }
 
-        // --- Mouse input ---
+        // --- Mouse click handling ---
         if (event.type == ButtonPress) {
-            if (event.xbutton.button == Button1) {
-                int mx = event.xbutton.x;
-                int my = event.xbutton.y;
-                screen_to_world(mx, my, x, y);
+            if (event.xbutton.button == Button1) {        // left click
+                screen_to_world(event.xbutton.x, event.xbutton.y, x, y);
+                if (osnap_enabled && snap_active) {
+                    snap_to_entity(*x, *y, x, y);
+                }
                 *has_start = 1;
                 done = true;
             }
-            else if (event.xbutton.button == Button3) {  // right click cancels
+            else if (event.xbutton.button == Button3) {   // right click = cancel
                 *has_start = 0;
                 done = true;
             }
-            else if (event.xbutton.button == Button4 || event.xbutton.button == Button5) {
-                int sx = event.xbutton.x, sy = event.xbutton.y;
-                double wx, wy;
-                screen_to_world(sx, sy, &wx, &wy);
-                double zoom = (event.xbutton.button == Button4) ? 1.1 : 0.9;
-                view.scale *= zoom;
-                view.offsetX = sx - wx * view.scale;
-                view.offsetY = sy + wy * view.scale;
-                redraw(app.drawArea, NULL, NULL);
+            else if (event.xbutton.button == Button4 ||
+                     event.xbutton.button == Button5) {   // mouse wheel zoom
+                handle_zoom(&event.xbutton);
             }
         }
 
-        // --- Rubberband line preview ---
-        else if (event.type == MotionNotify && has_base) {
-            XClearWindow(dpy, win);
-            redraw(app.drawArea, NULL, NULL);
+        // --- Mouse motion: rubberband + snap preview ---
+        else if (event.type == MotionNotify) {
+            double wx, wy;
+            screen_to_world(event.xmotion.x, event.xmotion.y, &wx, &wy);
 
-            int mx = event.xmotion.x;
-            int my = event.xmotion.y;
-            world_to_screen(x1, y1, &base_sx, &base_sy);
-            XDrawLine(dpy, win, gc, base_sx, base_sy, mx, my);
+            // snapping
+            if (osnap_enabled) {
+                double sx, sy;
+                if (snap_to_entity(wx, wy, &sx, &sy)) {
+                    snap_active = 1; snap_x = sx; snap_y = sy;
+                } else {
+                    snap_active = 0;
+                }
+                redraw(app.drawArea, NULL, NULL);
+            }
+
+            // rubberband
+            if (has_base) {
+                XClearWindow(dpy, win);
+                redraw(app.drawArea, NULL, NULL);
+                draw_rubberband(dpy, win, gc, x1, y1,
+                                event.xmotion.x, event.xmotion.y);
+            }
         }
 
-        // --- Keyboard coordinates input ---
+        // --- Keyboard input for typed coordinates ---
         else if (event.type == KeyPress && app.cmdInput) {
             KeySym keysym;
             char buf[256];
@@ -1127,26 +1245,25 @@ void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt
 
             if (keysym == XK_Return || keysym == XK_KP_Enter) {
                 char *text = XmTextFieldGetString(app.cmdInput);
-
                 if ((int)strlen(text) > protected_len) {
-                    const char *coords = text + protected_len; // new input only
+                    const char *coords = text + protected_len;
                     double tx, ty;
                     if (sscanf(coords, "%lf%*[, ]%lf", &tx, &ty) == 2) {
-                        *x = tx;
-                        *y = ty;
+                        *x = tx; *y = ty;
                         done = true;
                     }
                 }
                 XmTextFieldSetInsertionPosition(app.cmdInput, strlen(text));
                 XtFree(text);
             }
+            handle_osnap_toggle(keysym);
         }
 
         XtDispatchEvent(&event);
     }
 
     if (app.cmdInput)
-        XmTextFieldSetInsertionPosition(app.cmdInput, protected_len); // ensure cursor after prompt
+        XmTextFieldSetInsertionPosition(app.cmdInput, protected_len);
 }
 
 static void free_entities() {

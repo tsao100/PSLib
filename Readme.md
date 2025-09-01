@@ -5,7 +5,7 @@ I had only taken Fortran during my freshman year, and I didn't have a strong gra
 I remember a senior from the Physics Department who was also in the course. He was very proficient in C and had successfully compiled his code with the PS library using C.
 It's now 2025, the year of the rise of AI. Professor Chang has been very active in politics in recent years, and he's frequently featured in the media, bringing back memories of taking the course and doing the homework. So I did some research and searched for some information, and found that with the help of AI, I could create a **copycat PS library** under Linux, and then use Fortran to write the homework that I had not completed that year.
 
-This copycat PSLib is based on the TinySpline library found on github.
+This copycat PSLib is based on TinySpline librray found on github and wraps functions that can be called by Fortran.
 
 Chinese Translation:
 # 前言
@@ -16,6 +16,7 @@ Fortran語言是大一修的，並沒有掌握的很好，所以作業也做得�
 現在是2025年，是AI崛起的年，張老師最近幾年在政壇很活躍，媒體常常出現他的新聞，也讓我想起了當年修課寫作業的點點滴滴。
 於是我進行了一些研究、搜尋了一些資料，發現透過AI的幫助可以在Linux下創建一個**山寨版的PS library**，然後再用Fortran語言，寫出當年沒有完成的作業。
 
-這個山寨版的PSLib是以在github上找到的TinySpline為基礎捆出可供Fortran呼叫的數。
+這個山寨版的PSLib是以在github上找到的TinySpline為基礎包裝可供Fortran呼叫的函數。
+
 
 
