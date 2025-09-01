@@ -582,27 +582,43 @@ void redraw(Widget w, XtPointer client_data, XtPointer call_data) {
                 ctrlp_interleaved[2*i]   = e->data.spline.x[i];
                 ctrlp_interleaved[2*i+1] = e->data.spline.y[i];
             }
+            int i, dim = 2;
+            tsStatus status;
+            tsBSpline curve;
+            tsError err;
 
-            int st;
-            int dim = 2;
-            int type = TS_OPENED;
-            ps_spline_new_(&e->data.spline.degree, &dim, &e->data.spline.n_ctrlp, &type, &st);
-            if (st == 0) {
-                ps_spline_set_ctrlp_(ctrlp_interleaved, &st);
-                if (st == 0) {
-                    ps_spline_sample_(&sample_count, samples, &st);
-                    if (st == 0) {
-                        int sx_prev, sy_prev, sx, sy;
-                        for (int i=0; i<sample_count; i++) {
-                            world_to_screen(samples[2*i], samples[2*i+1], &sx, &sy);
-                            if (i > 0)
-                                XDrawLine(dpy, win, gc, sx_prev, sy_prev, sx, sy);
-                            sx_prev = sx; sy_prev = sy;
-                        }
-                    }
-                }
-                ps_spline_free_();
+
+            // 產生 Catmull-Rom spline
+            err = ts_bspline_interpolate_catmull_rom(ctrlp_interleaved, e->data.spline.n_ctrlp, dim,
+                                                    0.5, NULL, NULL, 1e-4,
+                                                    &curve, &status);
+            
+
+            if (err != TS_SUCCESS) {
+                fprintf(stderr, "Spline interpolation failed: %s\n", status.message);
+                return;
             }
+
+            // 取樣 spline
+            size_t actual_count;
+
+            err = ts_bspline_sample(&curve, sample_count, &samples, &actual_count, &status);
+            if (err != TS_SUCCESS) {
+                fprintf(stderr, "Spline sampling failed: %s\n", status.message);
+                ts_bspline_free(&curve);
+                return;
+            }
+
+            // 繪圖
+            int x1, y1, x2, y2;
+            for (i = 0; i < sample_count - 1; i++) {
+                world_to_screen(samples[i * 2 + 0], samples[i * 2 + 1], &x1, &y1);
+                world_to_screen(samples[(i + 1) * 2 + 0], samples[(i + 1) * 2 + 1], &x2, &y2);
+                XDrawLine(dpy, win, gc, x1, y1, x2, y2);
+            }
+            XFlush(dpy);
+            // 清理
+            ts_bspline_free(&curve);
 
             free(samples);
             free(ctrlp_interleaved);
