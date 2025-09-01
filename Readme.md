@@ -1,4 +1,4 @@
-#Preface
+# Preface
 In 1993, my junior year, I took Professor Chang Shan-cheng's computer-aided design course during the first semester. The course required students to write programs using Professor Chang's PS library (Picture Shape Library) in Fortran.
 I spent a lot of time on the computer doing my homework. The air conditioning in the Civil Engineering Department's drawing workstations was so strong that even after spending a few hours there, I felt terribly cold.
 I had only taken Fortran during my freshman year, and I didn't have a strong grasp of it, so I struggled to complete the homework.
