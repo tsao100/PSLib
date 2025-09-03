@@ -382,6 +382,7 @@ Entity* add_spline(double *ctrlx, double *ctrly, int n_ctrlp, int degree) {
     return e;
 }
 
+
 static AppWidgets app;
 static ViewState view = {400.0, 300.0, 1.0, 0, 0, 0, NULL};
 static char current_filename[256] = "Untitled";
@@ -390,6 +391,34 @@ static int protected_len = 0; // cumulative protected text length
 static int osnap_enabled = 0;     // toggled with F3
 static int snap_active = 0;       // 1 if a snap point is currently under cursor
 static double snap_x, snap_y;     // snapped world coordinates
+static Entity *selected_entity = NULL;
+
+void delete_entity(Entity *target) {
+    if (!target) return;
+
+    Entity **pp = &entity_list;
+    while (*pp) {
+        if (*pp == target) {
+            Entity *to_delete = *pp;
+            *pp = to_delete->next;
+
+            // free memory depending on type
+            if (to_delete->type == ENTITY_POLYLINE) {
+                free(to_delete->data.pline.x);
+                free(to_delete->data.pline.y);
+            } else if (to_delete->type == ENTITY_SPLINE) {
+                free(to_delete->data.spline.x);
+                free(to_delete->data.spline.y);
+            }
+
+            free(to_delete);
+            break;
+        }
+        pp = &(*pp)->next;
+    }
+
+    selected_entity = NULL;
+}
 
 /* --- Utility functions --- */
 static char *trim(char *str) {
@@ -476,6 +505,70 @@ void draw_arrow(Display *dpy, Drawable win, GC gc, int x1, int y1, int x2, int y
     XDrawLine(dpy, win, gc, x2, y2, ax2, ay2);
 }
 
+// returns malloc'ed double array [x0,y0, x1,y1, ...] and sets *out_count (number of points).
+// returns NULL on error (out_count set to 0).
+static double *sample_spline_entity(const Entity *e, int *out_count) {
+    *out_count = 0;
+    if (!e || e->type != ENTITY_SPLINE || e->data.spline.n_ctrlp < 2) return NULL;
+
+    // Estimate sample_count based on bounding box and current view.scale
+    double minx = e->data.spline.x[0], maxx = e->data.spline.x[0];
+    double miny = e->data.spline.y[0], maxy = e->data.spline.y[0];
+    for (int i = 1; i < e->data.spline.n_ctrlp; ++i) {
+        if (e->data.spline.x[i] < minx) minx = e->data.spline.x[i];
+        if (e->data.spline.x[i] > maxx) maxx = e->data.spline.x[i];
+        if (e->data.spline.y[i] < miny) miny = e->data.spline.y[i];
+        if (e->data.spline.y[i] > maxy) maxy = e->data.spline.y[i];
+    }
+    double approx_len = (maxx - minx) + (maxy - miny);
+    double pixel_len = approx_len * view.scale;
+    int sample_count = (int)(pixel_len);
+    if (sample_count < 32) sample_count = 32;
+    if (sample_count > 2000) sample_count = 2000; // safety cap
+
+    // Interleave control points into a temporary buffer
+    size_t nctrl = (size_t)e->data.spline.n_ctrlp;
+    double *ctrlp = malloc(sizeof(double) * 2 * nctrl);
+    if (!ctrlp) return NULL;
+    for (size_t i = 0; i < nctrl; ++i) {
+        ctrlp[2*i]   = e->data.spline.x[i];
+        ctrlp[2*i+1] = e->data.spline.y[i];
+    }
+
+    // Interpolate Catmull-Rom to a bspline and sample it
+    tsStatus status;
+    tsBSpline curve;
+    tsError err = ts_bspline_interpolate_catmull_rom(
+        ctrlp, (size_t)e->data.spline.n_ctrlp, (size_t)2,
+        0.5,              // tension (Catmull-Rom)
+        NULL, NULL,
+        1e-6,             // epsilon
+        &curve, &status);
+
+    free(ctrlp);
+    if (err != TS_SUCCESS) {
+        // interpolation failed
+        *out_count = 0;
+        return NULL;
+    }
+
+    double *samples = NULL;
+    size_t actual = 0;
+    err = ts_bspline_sample(&curve, (size_t)sample_count, &samples, &actual, &status);
+    // free curve resources (even on error)
+    ts_bspline_free(&curve);
+
+    if (err != TS_SUCCESS || actual == 0 || samples == NULL) {
+        if (samples) free(samples);
+        *out_count = 0;
+        return NULL;
+    }
+
+    // Note: samples is malloc'ed by TinySpline; we return it (caller must free).
+    *out_count = (int)actual;
+    return samples;
+}
+
 /* --- Drawing handler --- */
 void redraw(Widget w, XtPointer client_data, XtPointer call_data) {
     Window win = XtWindow(w);
@@ -526,8 +619,34 @@ void redraw(Widget w, XtPointer client_data, XtPointer call_data) {
     XDrawRectangle(dpy, win, gc, sx, sy, sz, sz);
 */
     // Redraw all stored entities
+
+    static unsigned long highlight_pixel = 0;
+    Colormap cmap = DefaultColormap(dpy, DefaultScreen(dpy));
+    XColor screen_def, exact_def;
+    if (XAllocNamedColor(dpy, cmap, "red", &screen_def, &exact_def)) {
+        highlight_pixel = screen_def.pixel;
+    } else {
+        /* fallback: try white, then black */
+        highlight_pixel = WhitePixel(dpy, DefaultScreen(dpy));
+        if (highlight_pixel == WhitePixel(dpy, DefaultScreen(dpy)))
+            /* ok */;
+        else
+            highlight_pixel = BlackPixel(dpy, DefaultScreen(dpy));
+    }
+
     Entity *e = entity_list;
+    XGCValues values;
+    values.foreground = highlight_pixel;  // e.g., red pixel
+    values.line_width = 2;
+    GC highlight_gc = XCreateGC(dpy, win, GCForeground|GCLineWidth, &values);
+    GC normal_gc=gc;
     while (e) {
+        if (e == selected_entity) {
+            gc=highlight_gc;
+        }else{
+            gc=normal_gc;
+        }
+
         if (e->type == ENTITY_LINE) {
             int sx1, sy1, sx2, sy2;
             world_to_screen(e->data.line.x1, e->data.line.y1, &sx1, &sy1);
@@ -554,76 +673,28 @@ void redraw(Widget w, XtPointer client_data, XtPointer call_data) {
             free(pts);
         }
         else if (e->type == ENTITY_SPLINE) {
-//            int sample_count = 100;
-                // Estimate curve length as bounding box perimeter (cheap heuristic)
-            double minx = e->data.spline.x[0], maxx = e->data.spline.x[0];
-            double miny = e->data.spline.y[0], maxy = e->data.spline.y[0];
-            for (int i = 1; i < e->data.spline.n_ctrlp; i++) {
-                if (e->data.spline.x[i] < minx) minx = e->data.spline.x[i];
-                if (e->data.spline.x[i] > maxx) maxx = e->data.spline.x[i];
-                if (e->data.spline.y[i] < miny) miny = e->data.spline.y[i];
-                if (e->data.spline.y[i] > maxy) maxy = e->data.spline.y[i];
+            int actual_count = 0;
+            double *samples = sample_spline_entity(e, &actual_count);
+            if (samples && actual_count >= 2) {
+                int sx_prev, sy_prev, sx, sy;
+                // draw with normal GC
+                for (int i = 0; i < actual_count; ++i) {
+                    world_to_screen(samples[2*i], samples[2*i+1], &sx, &sy);
+                    if (i > 0) XDrawLine(dpy, win, gc, sx_prev, sy_prev, sx, sy);
+                    sx_prev = sx; sy_prev = sy;
+                }
+
+                // if selected, draw highlight on top using hgc (thicker / colored)
+                if (e == selected_entity) {
+                    for (int i = 1; i < actual_count; ++i) {
+                        int sx1, sy1, sx2, sy2;
+                        world_to_screen(samples[2*(i-1)], samples[2*(i-1)+1], &sx1, &sy1);
+                        world_to_screen(samples[2*i], samples[2*i+1], &sx2, &sy2);
+                        XDrawLine(dpy, win, gc, sx1, sy1, sx2, sy2);
+                    }
+                }
             }
-            double approx_len = (maxx - minx) + (maxy - miny);  // L1 perimeter approx
-            double pixel_len = approx_len * view.scale;
-
-            int sample_count = (int)(pixel_len);   // one point per ~pixel
-            if (sample_count < 32) sample_count = 32;      // min quality
-            if (sample_count > 1000) sample_count = 1000;  // cap performance
-
-            double *samples = malloc(sizeof(double) * 2 * sample_count); // holds x,y
-            if (!samples) goto spline_done;
-
-            // Interleave x and y control points for TinySpline
-            double *ctrlp_interleaved = malloc(sizeof(double) * 2 * e->data.spline.n_ctrlp);
-            if (!ctrlp_interleaved) { free(samples); goto spline_done; }
-
-            for (int i = 0; i < e->data.spline.n_ctrlp; i++) {
-                ctrlp_interleaved[2*i]   = e->data.spline.x[i];
-                ctrlp_interleaved[2*i+1] = e->data.spline.y[i];
-            }
-            int i, dim = 2;
-            tsStatus status;
-            tsBSpline curve;
-            tsError err;
-
-
-            // 產生 Catmull-Rom spline
-            err = ts_bspline_interpolate_catmull_rom(ctrlp_interleaved, e->data.spline.n_ctrlp, dim,
-                                                    0.5, NULL, NULL, 1e-4,
-                                                    &curve, &status);
-            
-
-            if (err != TS_SUCCESS) {
-                fprintf(stderr, "Spline interpolation failed: %s\n", status.message);
-                return;
-            }
-
-            // 取樣 spline
-            size_t actual_count;
-
-            err = ts_bspline_sample(&curve, sample_count, &samples, &actual_count, &status);
-            if (err != TS_SUCCESS) {
-                fprintf(stderr, "Spline sampling failed: %s\n", status.message);
-                ts_bspline_free(&curve);
-                return;
-            }
-
-            // 繪圖
-            int x1, y1, x2, y2;
-            for (i = 0; i < sample_count - 1; i++) {
-                world_to_screen(samples[i * 2 + 0], samples[i * 2 + 1], &x1, &y1);
-                world_to_screen(samples[(i + 1) * 2 + 0], samples[(i + 1) * 2 + 1], &x2, &y2);
-                XDrawLine(dpy, win, gc, x1, y1, x2, y2);
-            }
-            XFlush(dpy);
-            // 清理
-            ts_bspline_free(&curve);
-
-            free(samples);
-            free(ctrlp_interleaved);
-
-        spline_done:;
+            if (samples) free(samples);
         }
         e = e->next;
     }
@@ -633,12 +704,15 @@ void redraw(Widget w, XtPointer client_data, XtPointer call_data) {
         int sx, sy;
         world_to_screen(snap_x, snap_y, &sx, &sy);
         int size = 6;
-        XDrawLine(dpy, win, gc, sx-size, sy, sx+size, sy);
-        XDrawLine(dpy, win, gc, sx, sy-size, sx, sy+size);
+        XDrawLine(dpy, win, gc, sx+size, sy-size, sx+size, sy+size);
+        XDrawLine(dpy, win, gc, sx+size, sy+size, sx-size, sy+size);
+        XDrawLine(dpy, win, gc, sx-size, sy+size, sx-size, sy-size);
+        XDrawLine(dpy, win, gc, sx-size, sy-size, sx+size, sy-size);
     }
 
     if (font) XFreeFont(dpy, font);
-    XFreeGC(dpy, gc);
+    XFreeGC(dpy, normal_gc);
+    XFreeGC(dpy, highlight_gc);
 }
 
 static int snap_to_entity(double wx, double wy, double *sx, double *sy) {
@@ -708,11 +782,105 @@ static int snap_to_entity(double wx, double wy, double *sx, double *sy) {
     return 0;
 }
 
+static double dist2(double x1, double y1, double x2, double y2) {
+    double dx = x2 - x1, dy = y2 - y1;
+    return dx*dx + dy*dy;
+}
+
+static double point_seg_dist(double px, double py,
+                             double x1, double y1, double x2, double y2) {
+    double vx = x2 - x1, vy = y2 - y1;
+    double wx = px - x1, wy = py - y1;
+    double c1 = vx*wx + vy*wy;
+    if (c1 <= 0) return sqrt(dist2(px,py,x1,y1));
+    double c2 = vx*vx + vy*vy;
+    if (c2 <= c1) return sqrt(dist2(px,py,x2,y2));
+    double b = c1 / c2;
+    double bx = x1 + b*vx, by = y1 + b*vy;
+    return sqrt(dist2(px,py,bx,by));
+}
+
+void ps_entsel_(double *wx, double *wy, int *found) {
+    double click_x = *wx;
+    double click_y = *wy;
+    double tol = 5.0 / view.scale;   // 5 pixels tolerance, convert to world
+
+    Entity *best = NULL;
+    double best_dist = 1e30;
+
+    for (Entity *e = entity_list; e; e = e->next) {
+        double d = 1e30;
+
+        if (e->type == ENTITY_LINE) {
+            d = point_seg_dist(click_x, click_y,
+                               e->data.line.x1, e->data.line.y1,
+                               e->data.line.x2, e->data.line.y2);
+        }
+        else if (e->type == ENTITY_ARC) {
+            double dx = click_x - e->data.arc.cx;
+            double dy = click_y - e->data.arc.cy;
+            double r = sqrt(dx*dx + dy*dy);
+            double ang = atan2(dy, dx);
+            if (ang < e->data.arc.startAng) ang += 2*M_PI;
+            if (ang <= e->data.arc.endAng) {
+                d = fabs(r - e->data.arc.r);
+            }
+        }
+        else if (e->type == ENTITY_POLYLINE) {
+            for (int i=0; i<e->data.pline.npts-1; i++) {
+                double dd = point_seg_dist(click_x, click_y,
+                                           e->data.pline.x[i], e->data.pline.y[i],
+                                           e->data.pline.x[i+1], e->data.pline.y[i+1]);
+                if (dd < d) d = dd;
+            }
+        }
+        else if (e->type == ENTITY_SPLINE) {
+            int actual_count = 0;
+            double *samples = sample_spline_entity(e, &actual_count);
+            if (samples && actual_count >= 2) {
+                for (int i = 0; i < actual_count - 1; ++i) {
+                    double dseg = point_seg_dist(click_x, click_y,
+                                                samples[2*i], samples[2*i+1],
+                                                samples[2*(i+1)], samples[2*(i+1)+1]);
+                    if (dseg < d) d = dseg;
+                }
+            }
+            if (samples) free(samples);
+        }
+
+        if (d < best_dist && d < tol) {
+            best = e;
+            best_dist = d;
+        }
+    }
+
+    selected_entity = best;
+    *found = (best != NULL);
+
+    if (*found) {
+        // Redraw everything with highlight
+        redraw(app.drawArea, NULL, NULL);
+    }
+}
 
 /* --- Event Handlers --- */
 void mouse_event(Widget w, XtPointer client_data, XEvent *event, Boolean *cont) {
     if (event->type == ButtonPress) {
-        if (event->xbutton.button == Button2) {
+        if (event->xbutton.button == Button1) {   /* Left click */
+            double wx, wy;
+            screen_to_world(event->xbutton.x, event->xbutton.y, &wx, &wy);
+            int found;
+            ps_entsel_(&wx, &wy, &found);
+            if (found) {
+                redraw(w, NULL, NULL);  /* highlight via selected_entity */
+            }
+        }
+        else if (event->xbutton.button == Button2) {
+            Display *dpy = XtDisplay(w);
+            Cursor cross = XCreateFontCursor(dpy, XC_hand1);
+            Window win = XtWindow(w);
+            XDefineCursor(dpy, win, cross);
+
             view.isPanning = 1;
             view.lastX = event->xbutton.x;
             view.lastY = event->xbutton.y;
@@ -727,7 +895,12 @@ void mouse_event(Widget w, XtPointer client_data, XEvent *event, Boolean *cont) 
             redraw(w, NULL, NULL);
         }
     } else if (event->type == ButtonRelease) {
-        if (event->xbutton.button == Button2) view.isPanning = 0;
+        if (event->xbutton.button == Button2){ view.isPanning = 0;
+            Display *dpy = XtDisplay(w);
+            Cursor cross = XCreateFontCursor(dpy, XC_crosshair);
+            Window win = XtWindow(w);
+            XDefineCursor(dpy, win, cross);
+}
     } else if (event->type == MotionNotify) {
         double wx, wy;
         screen_to_world(event->xmotion.x, event->xmotion.y, &wx, &wy);
@@ -754,6 +927,33 @@ static void update_status(const char *msg) {
         XmString xm_msg = XmStringCreateLocalized((char *)msg);
         XtVaSetValues(app.statusBar, XmNlabelString, xm_msg, NULL);
         XmStringFree(xm_msg);
+    }
+}
+
+void key_event(Widget w, XtPointer client_data, XEvent *event, Boolean *cont) {
+    if (event->type == KeyPress) {
+        KeySym keysym = XLookupKeysym(&event->xkey, 0);
+        if (keysym == XK_F3) {
+            osnap_enabled = !osnap_enabled;
+            char msg[64];
+            snprintf(msg, sizeof(msg), "OSNAP %s", osnap_enabled ? "ON" : "OFF");
+            update_status(msg);
+            if (!osnap_enabled) {
+                snap_active = 0;
+                redraw(w, NULL, NULL);
+            }
+        }else if (keysym == XK_Escape) {
+            if (selected_entity) {
+                selected_entity = NULL;
+                redraw(w, NULL, NULL);
+            }
+        }else if (keysym == XK_Delete || keysym == XK_BackSpace) {
+            if (selected_entity) {
+                delete_entity(selected_entity);
+                selected_entity = NULL;
+                redraw(w, NULL, NULL);
+            }
+        }
     }
 }
 
@@ -1120,6 +1320,7 @@ void start_gui_() {
     XtAddCallback(app.drawArea, XmNexposeCallback, redraw, NULL);
     XtAddEventHandler(app.drawArea, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
                       False, mouse_event, NULL);
+    XtAddEventHandler(app.drawArea, KeyPressMask, False, key_event, NULL);
 
     // Realize and run
     XtRealizeWidget(app.top);
@@ -1449,5 +1650,4 @@ void ps_new_drawing_() {
     redraw(app.drawArea, NULL, NULL);
     set_window_title(current_filename);
 }
-
 
