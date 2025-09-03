@@ -942,7 +942,8 @@ void key_event(Widget w, XtPointer client_data, XEvent *event, Boolean *cont) {
                 snap_active = 0;
                 redraw(w, NULL, NULL);
             }
-        }else if (keysym == XK_Escape) {
+        }
+        else if (keysym == XK_Escape) {
             if (selected_entity) {
                 selected_entity = NULL;
                 redraw(w, NULL, NULL);
@@ -1467,6 +1468,7 @@ void ps_getpoint_(char *prompt, double *x, double *y,
                     double tx, ty;
                     if (sscanf(coords, "%lf%*[, ]%lf", &tx, &ty) == 2) {
                         *x = tx; *y = ty;
+                        *has_start = 1;
                         done = true;
                     }
                 }
