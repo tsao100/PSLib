@@ -1,1 +1,2 @@
-convert +append *.bmp icons.png
+mogrify -resize 32x32! -path resized icons/*.bmp
+convert +append resized/*.bmp icons/icons.png

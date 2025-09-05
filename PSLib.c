@@ -9,6 +9,7 @@
 #include <Xm/FileSB.h>
 #include <X11/Xlib.h>
 #include <X11/xpm.h>
+#include <png.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "tinyspline.h"
@@ -18,6 +19,7 @@
 #include <stdbool.h>
 #include <X11/cursorfont.h>
 #include <stdint.h>
+#include "PSLib.h"
 
 // Tolerance in screen pixels for object snap
 #define OSNAP_TOL_PIXELS 10
@@ -25,38 +27,116 @@
 static tsBSpline spline;
 static int spline_ready = 0;
 
-/* 建立 spline
-void ps_spline_new_(int *deg, int *dim, int *n_ctrlp, int *type) {
-    tsStatus status;
-    tsError err = ts_bspline_new((size_t)*n_ctrlp,
-                                 (size_t)*dim,
-                                 (size_t)*deg,
-                                 (tsBSplineType)*type,
-                                 &spline,
-                                 &status);
-    spline_ready = (err == TS_SUCCESS);
-    if (!spline_ready) {
-        fprintf(stderr, "Error: %s\n", status.message);
+static IconAtlas toolbar_icons = {0};
+
+Pixmap load_png_to_pixmap(Display *dpy, Window win, const char *filename,
+                          int *w, int *h) {
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) { perror("fopen"); return None; }
+
+    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    png_infop info = png_create_info_struct(png);
+    if (!png || !info) { fclose(fp); return None; }
+
+    if (setjmp(png_jmpbuf(png))) { fclose(fp); png_destroy_read_struct(&png, &info, NULL); return None; }
+
+    png_init_io(png, fp);
+    png_read_info(png, info);
+
+    int width  = png_get_image_width(png, info);
+    int height = png_get_image_height(png, info);
+    png_byte color_type = png_get_color_type(png, info);
+    png_byte bit_depth  = png_get_bit_depth(png, info);
+
+    // Ensure RGBA
+    if (bit_depth == 16) png_set_strip_16(png);
+    if (color_type == PNG_COLOR_TYPE_PALETTE) png_set_palette_to_rgb(png);
+    if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8) png_set_expand_gray_1_2_4_to_8(png);
+    if (png_get_valid(png, info, PNG_INFO_tRNS)) png_set_tRNS_to_alpha(png);
+    if (color_type == PNG_COLOR_TYPE_RGB ||
+        color_type == PNG_COLOR_TYPE_GRAY ||
+        color_type == PNG_COLOR_TYPE_PALETTE)
+        png_set_filler(png, 0xFF, PNG_FILLER_AFTER);
+
+    png_read_update_info(png, info);
+
+    png_bytep *row_pointers = (png_bytep*)malloc(sizeof(png_bytep) * height);
+    for (int y=0; y<height; y++) {
+        row_pointers[y] = (png_byte*)malloc(png_get_rowbytes(png, info));
     }
-}*/
+
+    png_read_image(png, row_pointers);
+    fclose(fp);
+
+    // Convert to XImage
+    int screen = DefaultScreen(dpy);
+    Visual *visual = DefaultVisual(dpy, screen);
+    int depth = DefaultDepth(dpy, screen);
+
+    XImage *ximg = XCreateImage(dpy, visual, depth, ZPixmap, 0,
+                                malloc(width * height * 4), width, height, 32, 0);
+
+    for (int y=0; y<height; y++) {
+        png_bytep row = row_pointers[y];
+        for (int x=0; x<width; x++) {
+            png_bytep px = &(row[x * 4]);
+            unsigned long pixel = (px[0]<<16) | (px[1]<<8) | (px[2]); // RGB only
+            XPutPixel(ximg, x, y, pixel);
+        }
+        free(row);
+    }
+    free(row_pointers);
+
+    Pixmap pixmap = XCreatePixmap(dpy, win, width, height, depth);
+    GC gc = XCreateGC(dpy, pixmap, 0, NULL);
+    XPutImage(dpy, pixmap, gc, ximg, 0, 0, 0, 0, width, height);
+    XFreeGC(dpy, gc);
+    XDestroyImage(ximg);
+
+    *w = width;
+    *h = height;
+    return pixmap;
+}
+
+void load_icon_atlas(Display *dpy, Window win, const char *filename, int icon_w, int icon_h) {
+    int w,h;
+    Pixmap pm = load_png_to_pixmap(dpy, win, filename, &w, &h);
+    toolbar_icons.pixmap = pm;
+    toolbar_icons.width = w;
+    toolbar_icons.height = h;
+    toolbar_icons.icon_w = icon_w;
+    toolbar_icons.icon_h = icon_h;
+}
+
+Pixmap extract_icon(Display *dpy, Window win, int index) {
+    if (!toolbar_icons.pixmap) return None;
+
+    int cols = toolbar_icons.width / toolbar_icons.icon_w;
+    int row = index / cols;
+    int col = index % cols;
+
+    int sx = col * toolbar_icons.icon_w;
+    int sy = row * toolbar_icons.icon_h;
+
+    Pixmap sub = XCreatePixmap(dpy, win,
+        toolbar_icons.icon_w, toolbar_icons.icon_h,
+        DefaultDepth(dpy, DefaultScreen(dpy)));
+
+    GC gc = XCreateGC(dpy, win, 0, NULL);
+    XCopyArea(dpy, toolbar_icons.pixmap, sub, gc,
+              sx, sy,
+              toolbar_icons.icon_w, toolbar_icons.icon_h,
+              0, 0);
+    XFreeGC(dpy, gc);
+
+    return sub;
+}
 
 // 複製 spline
 void ps_spline_copy_(tsBSpline *dest) {
     if (!spline_ready) return;
     ts_bspline_copy(&spline, dest, NULL);
 }
-
-/* 釋放 spline
-void ps_spline_free_() {
-    if (spline_ready) ts_bspline_free(&spline);
-    spline_ready = 0;
-}*/
-
-/* 插入控制點
-void ps_spline_set_ctrlp_(double *ctrlp) {
-    if (!spline_ready) return;
-    ts_bspline_set_control_points(&spline, ctrlp, NULL);
-}*/
 
 // 讀取控制點
 void ps_spline_get_ctrlp_(double *ctrlp_out) {
@@ -154,14 +234,6 @@ void ps_spline_eval_(double *u, double *out) {
     ts_deboornet_free(&net);
 }
 
-/* 取樣多點
-void ps_spline_sample_(int *samples, double *out, int *actual) {
-    if (!spline_ready) return;
-    size_t act = 0;
-    ts_bspline_sample(&spline, (size_t)*samples, &out, &act, NULL);
-    *actual = (int)act;
-}*/
-
 // 分割 splines
 void ps_spline_split_(double *u, tsBSpline *out, int *k_out) {
     if (!spline_ready) return;
@@ -220,7 +292,6 @@ void ps_spline_new_(int *degree, int *dim, int *n_ctrlp, int *type, int *status)
 }
 
 
-
 void ps_spline_set_ctrlp_(double *ctrlp, int *status) {
     if (!spline_ready) { *status=1; return; }
     tsStatus stat;
@@ -253,61 +324,6 @@ void ps_spline_free_() {
     if (spline_ready) ts_bspline_free(&spline);
     spline_ready = 0;
 }
-
-typedef struct {
-    double offsetX, offsetY;
-    double scale;
-    int lastX, lastY;
-    int isPanning;
-    Widget status_label;
-} ViewState;
-
-typedef struct {
-    Widget top, form, menuBar, toolBar, drawArea, statusBar, cmdInput;
-} AppWidgets;
-
-typedef enum {
-    ENTITY_LINE,
-    ENTITY_ARC,
-    ENTITY_POLYLINE,
-    ENTITY_SPLINE
-    // Extend later...
-} EntityType;
-
-typedef struct {
-    double x1, y1, x2, y2;
-} LineEntity;
-
-typedef struct {
-    double cx, cy;    // center
-    double r;         // radius
-    double startAng;  // radians
-    double endAng;    // radians
-} ArcEntity;
-
-typedef struct {
-    int npts;
-    double *x;
-    double *y;
-} PolylineEntity;
-
-typedef struct {
-    int n_ctrlp;       // number of control points
-    double *x;         // x coordinates
-    double *y;         // y coordinates
-    int degree;        // spline degree
-} SplineEntity;
-
-typedef struct Entity {
-    EntityType type;
-    union {
-        LineEntity line;
-        ArcEntity arc;
-        PolylineEntity pline;
-        SplineEntity spline;   // <-- new member
-    } data;
-    struct Entity *next;
-} Entity;
 
 static Entity *entity_list = NULL;   // head of linked list
 Entity* add_line(double x1, double y1, double x2, double y2) {
@@ -451,14 +467,6 @@ void world_to_screen(double wx, double wy, int *sx, int *sy) {
 }
 
 #define MAX_ACTIONS 10
-
-typedef void (*ActionFunc)();
-
-typedef struct {
-    char name[32];
-    ActionFunc func;
-} Action;
-
 static Action action_table[MAX_ACTIONS];
 static int action_count = 0;
 
@@ -611,13 +619,7 @@ void redraw(Widget w, XtPointer client_data, XtPointer call_data) {
                 XDrawString(dpy, win, gc, x0 + 6, sy + 5, label, strlen(label));
         }
     }
-/* Here put the entities redraw function.
-    double wx = 50, wy = 50;
-    int sx, sy;
-    world_to_screen(wx, wy, &sx, &sy);
-    int sz = (int)(30 * view.scale);
-    XDrawRectangle(dpy, win, gc, sx, sy, sz, sz);
-*/
+
     // Redraw all stored entities
 
     static unsigned long highlight_pixel = 0;
@@ -998,15 +1000,6 @@ void toolbar_button_cb(Widget w, XtPointer client_data, XtPointer call_data) {
     trigger_action(label);  // Call Fortran subroutine
 }
 
-/*
-static void menu_item_cb(Widget w, XtPointer client_data, XtPointer call_data) {
-    handle_command((const char *)client_data);
-}
-
-static void toolbar_button_cb(Widget w, XtPointer client_data, XtPointer call_data) {
-    handle_command((const char *)client_data);
-}*/
-
 static Pixmap load_xpm(Display *dpy, Window win, const char *filename) {
     Pixmap pixmap = None;
     Pixmap mask = None;
@@ -1111,6 +1104,11 @@ static Widget create_toolbar_from_file(Widget parent, const char *filename) {
     Widget toolbar = XmCreateRowColumn(parent, "toolBar", NULL, 0);
     XtVaSetValues(toolbar, XmNorientation, XmHORIZONTAL, XmNpacking, XmPACK_TIGHT, XmNspacing, 4, NULL);
 
+    // Load atlas once at startup
+    load_icon_atlas(XtDisplay(parent), DefaultRootWindow(XtDisplay(parent)),
+                "icons/icons.png", 32, 32);
+
+
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         char *p = trim(line);
@@ -1121,7 +1119,9 @@ static Widget create_toolbar_from_file(Widget parent, const char *filename) {
             if (icon_path && strlen(icon_path) > 0) {
                 //char icon_path[256];
                 //snprintf(icon_path, sizeof(icon_path), "icons/%s.xpm", cmd);
-                Pixmap pix = load_xpm(XtDisplay(parent), DefaultRootWindow(XtDisplay(parent)), icon_path);
+                //Pixmap pix = load_xpm(XtDisplay(parent), DefaultRootWindow(XtDisplay(parent)), icon_path);
+                int icon_index = atoi(icon_path);
+                Pixmap pix = extract_icon(XtDisplay(parent), DefaultRootWindow(XtDisplay(parent)), icon_index);
 
                 Arg args[3];
                 XmString xm_label = XmStringCreateLocalized(menu_id);
@@ -1166,21 +1166,6 @@ void ps_wait_click_(int *x, int *y) {
         }
     }
 }
-
-/* void ps_draw_line_(double *x1, double *y1, double *x2, double *y2) {
-    Display *dpy = XtDisplay(app.drawArea);
-    Window win = XtWindow(app.drawArea);
-    int sx1, sy1, sx2, sy2;
-    // Convert world coordinates to screen coordinates
-    world_to_screen(*x1, *y1, &sx1, &sy1);
-    world_to_screen(*x2, *y2, &sx2, &sy2);  
-
-    GC gc = XCreateGC(dpy, win, 0, NULL);
-    XSetForeground(dpy, gc, BlackPixel(dpy, DefaultScreen(dpy)));
-    XDrawLine(dpy, win, gc, sx1, sy1, sx2, sy2);
-    XFreeGC(dpy, gc);
-}
- */
 
 void ps_draw_line_(double *x1, double *y1, double *x2, double *y2) {
     add_line(*x1, *y1, *x2, *y2);
