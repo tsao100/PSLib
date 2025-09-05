@@ -86,10 +86,10 @@
         END IF
         ! Right-click exits loop
 
-        IF (NCTRL < DEGREE+1) THEN
-            PRINT *, 'Not enough points to form a spline!'
-            RETURN
-        END IF
+        !IF (NCTRL < DEGREE+1) THEN
+        !    PRINT *, 'Not enough points to form a spline!'
+        !    RETURN
+        !END IF
 
         ! Draw spline using all selected points
         CALL PS_DRAW_SPLINE(CTRLPTS, NCTRL, DEGREE, DIM, TYPE, STATUS)

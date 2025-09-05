@@ -23,6 +23,11 @@
 
 // Tolerance in screen pixels for object snap
 #define OSNAP_TOL_PIXELS 10
+#define MAX_TEMP_POINTS 1024
+static double rubber_x[MAX_TEMP_POINTS];
+static double rubber_y[MAX_TEMP_POINTS];
+static int rubber_count = 0;
+
 
 static tsBSpline spline;
 static int spline_ready = 0;
@@ -1361,10 +1366,70 @@ static void handle_osnap_toggle(KeySym key) {
 }
 
 static void draw_rubberband(Display *dpy, Window win, GC gc,
-                            double x1, double y1, int mx, int my) {
-    int base_sx, base_sy;
-    world_to_screen(x1, y1, &base_sx, &base_sy);
-    XDrawLine(dpy, win, gc, base_sx, base_sy, mx, my);
+                            double *px, double *py, int npoints,
+                            int mx, int my)
+{
+    if (npoints < 1) return;
+
+    // Convert all world coords to screen
+    XPoint *pts = malloc((npoints + 1) * sizeof(XPoint));
+    int sx, sy;
+    for (int i = 0; i < npoints-1; i++) {
+        world_to_screen(px[i], py[i], &sx, &sy);
+    // Add the current mouse pos as the last "floating" point
+        pts[i].x = (short) sx;
+        pts[i].y = (short) sy;
+    }
+
+    pts[npoints].x = mx;
+    pts[npoints].y = my;
+
+
+    // Draw polyline
+    if (npoints < 3){
+        //XDrawLines(dpy, win, gc, pts, npoints, CoordModeOrigin);
+        XDrawLine(dpy, win, gc, sx, sy, mx, my);
+    } else { 
+        // Build a temporary Entity-like spline
+        Entity e;
+        e.type = ENTITY_SPLINE;
+        e.data.spline.n_ctrlp = npoints + 1; // include floating mouse point
+        e.data.spline.x = malloc(sizeof(double) * e.data.spline.n_ctrlp);
+        e.data.spline.y = malloc(sizeof(double) * e.data.spline.n_ctrlp);
+
+        for (int i = 0; i < npoints; i++) {
+            e.data.spline.x[i] = px[i];
+            e.data.spline.y[i] = py[i];
+        }
+
+        // Append floating last mouse position (convert screen → world first)
+        double wx, wy;
+        screen_to_world(mx, my, &wx, &wy);
+        e.data.spline.x[npoints] = wx;
+        e.data.spline.y[npoints] = wy;
+
+        // Sample spline
+        int sample_count = 0;
+        double *samples = sample_spline_entity(&e, &sample_count);
+
+        if (samples && sample_count > 1) {
+            XPoint *pts = malloc(sample_count * sizeof(XPoint));
+            for (int i = 0; i < sample_count; i++) {
+                int sx, sy;
+                world_to_screen(samples[2*i], samples[2*i+1], &sx, &sy);
+                pts[i].x = (short)sx;
+                pts[i].y = (short)sy;
+            }
+            XDrawLines(dpy, win, gc, pts, sample_count, CoordModeOrigin);
+            free(pts);
+            free(samples);
+        }
+
+        free(e.data.spline.x);
+        free(e.data.spline.y);
+    }
+
+    free(pts);
 }
 
 // --- Main point picker ---
@@ -1381,7 +1446,13 @@ void ps_getpoint_(char *prompt, double *x, double *y,
     // base point (rubber band start)
     double x1 = 0, y1 = 0;
     bool has_base = (*has_start != 0);
-    if (has_base) { x1 = *x; y1 = *y; }
+    if (has_base) { 
+        x1 = *x; 
+        y1 = *y; 
+        rubber_x[0] = x1;
+        rubber_y[0] = y1;
+        rubber_count++;
+    }
 
     XEvent event;
     bool done = false;
@@ -1401,11 +1472,17 @@ void ps_getpoint_(char *prompt, double *x, double *y,
                 if (osnap_enabled && snap_active) {
                     snap_to_entity(*x, *y, x, y);
                 }
+                if (rubber_count < MAX_TEMP_POINTS) {
+                    rubber_x[rubber_count] = *x;
+                    rubber_y[rubber_count] = *y;
+                    rubber_count++;
+                }
                 *has_start = 1;
                 done = true;
             }
             else if (event.xbutton.button == Button3) {   // right click = cancel
                 *has_start = 0;
+                rubber_count=0;
                 done = true;
             }
             else if (event.xbutton.button == Button4 ||
@@ -1431,10 +1508,10 @@ void ps_getpoint_(char *prompt, double *x, double *y,
             }
 
             // rubberband
-            if (has_base) {
+            if (has_base && rubber_count > 0) {
                 XClearWindow(dpy, win);
                 redraw(app.drawArea, NULL, NULL);
-                draw_rubberband(dpy, win, gc, x1, y1,
+                draw_rubberband(dpy, win, gc, rubber_x, rubber_y, rubber_count,
                                 event.xmotion.x, event.xmotion.y);
             }
         }

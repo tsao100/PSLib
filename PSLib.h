@@ -179,7 +179,7 @@ static void update_prompt(char *prompt, int prompt_len);
 static void handle_zoom(XButtonEvent *bev);
 static void handle_osnap_toggle(KeySym key);
 static void draw_rubberband(Display *dpy, Window win, GC gc,
-                           double x1, double y1, int mx, int my);
+                            double *px, double *py, int npoints, int mx, int my);
 static double *sample_spline_entity(const Entity *e, int *out_count);
 static int snap_to_entity(double wx, double wy, double *sx, double *sy);
 static double dist2(double x1, double y1, double x2, double y2);
