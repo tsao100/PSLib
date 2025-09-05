@@ -1,2 +1,4 @@
 PSLib.o
 PSLIB_TEST
+parson.o
+.gitignore
