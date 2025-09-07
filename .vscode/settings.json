@@ -1,5 +1,6 @@
 {
     "files.associations": {
         "cursorfont.h": "c"
-    }
+    },
+    "fortran.fortls.path": "/usr/bin/fortls"
 }

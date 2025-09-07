@@ -31,6 +31,7 @@ static int rubber_count = 0;
 
 static tsBSpline spline;
 static int spline_ready = 0;
+static EntityType current_entity_mode = ENTITY_NONE; // default mode
 
 static IconAtlas toolbar_icons = {0};
 
@@ -350,7 +351,19 @@ Entity* add_arc(double cx, double cy, double r, double a1, double a2) {
     e->data.arc.cy = cy;
     e->data.arc.r = r;
     e->data.arc.startAng = a1;
-    e->data.arc.endAng = a2;
+    e->data.arc.sweepAng = a2;
+    e->next = entity_list;
+    entity_list = e;
+    return e;
+}
+
+Entity* add_rect(double x1, double y1, double x2, double y2) {
+    Entity *e = (Entity *)malloc(sizeof(Entity));
+    e->type = ENTITY_RECT;
+    e->data.rect.x1 = x1;
+    e->data.rect.y1 = y1;
+    e->data.rect.x2 = x2;
+    e->data.rect.y2 = y2;
     e->next = entity_list;
     entity_list = e;
     return e;
@@ -659,27 +672,52 @@ void redraw(Widget w, XtPointer client_data, XtPointer call_data) {
             world_to_screen(e->data.line.x1, e->data.line.y1, &sx1, &sy1);
             world_to_screen(e->data.line.x2, e->data.line.y2, &sx2, &sy2);
             XDrawLine(dpy, win, gc, sx1, sy1, sx2, sy2);
-        }
-        else if (e->type == ENTITY_ARC) {
+        } else if (e->type == ENTITY_ARC) {
             int scx, scy;
             world_to_screen(e->data.arc.cx, e->data.arc.cy, &scx, &scy);
-            int r = (int)(e->data.arc.r * view.scale);
-            int ang1 = (int)(e->data.arc.startAng * 64 * 180 / M_PI);
-            int ang2 = (int)((e->data.arc.endAng - e->data.arc.startAng) * 64 * 180 / M_PI);
-            XDrawArc(dpy, win, gc, scx - r, scy - r, 2*r, 2*r, ang1, ang2);
-        }
-        else if (e->type == ENTITY_POLYLINE) {
-            XPoint *pts = (XPoint*)malloc(e->data.pline.npts * sizeof(XPoint));
-            for (int i=0; i<e->data.pline.npts; i++) {
-                int sx, sy;
-                world_to_screen(e->data.pline.x[i], e->data.pline.y[i], &sx, &sy);
-                pts[i].x = (short)sx;
-                pts[i].y = (short)sy;
-            }
-            XDrawLines(dpy, win, gc, pts, e->data.pline.npts, CoordModeOrigin);
-            free(pts);
-        }
-        else if (e->type == ENTITY_SPLINE) {
+            int sr = (int)(e->data.arc.r * view.scale);
+
+            double a1 = e->data.arc.startAng;
+            double sweep = e->data.arc.sweepAng;
+
+            // normalize angles into [-2π, 2π] range
+            while (a1 < 0) a1 += 2*M_PI;
+            while (a1 >= 2*M_PI) a1 -= 2*M_PI;
+            if (sweep > 2*M_PI) sweep = fmod(sweep, 2*M_PI);
+            if (sweep < -2*M_PI) sweep = fmod(sweep, -2*M_PI);
+
+            // Convert to X11 units (counterclockwise, 1/64 degrees)
+            int sStartAng = (int)(a1 * 180.0 / M_PI * 64);
+            int sSweepAng = (int)(sweep * 180.0 / M_PI * 64);
+
+            int sx = scx - sr;
+            int sy = scy - sr;
+            int sw = sr * 2;
+            int sh = sr * 2;
+
+            XDrawArc(dpy, win, gc, sx, sy, sw, sh, sStartAng, sSweepAng);
+        } else if (e->type == ENTITY_POLYLINE) {
+                XPoint *pts = (XPoint*)malloc(e->data.pline.npts * sizeof(XPoint));
+                for (int i=0; i<e->data.pline.npts; i++) {
+                    int sx, sy;
+                    world_to_screen(e->data.pline.x[i], e->data.pline.y[i], &sx, &sy);
+                    pts[i].x = (short)sx;
+                    pts[i].y = (short)sy;
+                }
+                XDrawLines(dpy, win, gc, pts, e->data.pline.npts, CoordModeOrigin);
+                free(pts);
+        } else if (e->type == ENTITY_RECT) {
+                int sx1, sy1, sx2, sy2;
+                world_to_screen(e->data.rect.x1, e->data.rect.y1, &sx1, &sy1);
+                world_to_screen(e->data.rect.x2, e->data.rect.y2, &sx2, &sy2);
+
+                int x = (sx1 < sx2) ? sx1 : sx2;
+                int y = (sy1 < sy2) ? sy1 : sy2;
+                int w = abs(sx2 - sx1);
+                int h = abs(sy2 - sy1);
+
+                XDrawRectangle(dpy, win, gc, x, y, w, h);
+        } else if (e->type == ENTITY_SPLINE) {
             int actual_count = 0;
             double *samples = sample_spline_entity(e, &actual_count);
             if (samples && actual_count >= 2) {
@@ -822,16 +860,59 @@ void ps_entsel_(double *wx, double *wy, int *found) {
             d = point_seg_dist(click_x, click_y,
                                e->data.line.x1, e->data.line.y1,
                                e->data.line.x2, e->data.line.y2);
-        }
-        else if (e->type == ENTITY_ARC) {
+        } else if (e->type == ENTITY_ARC) {
             double dx = click_x - e->data.arc.cx;
             double dy = click_y - e->data.arc.cy;
             double r = sqrt(dx*dx + dy*dy);
             double ang = atan2(dy, dx);
-            if (ang < e->data.arc.startAng) ang += 2*M_PI;
-            if (ang <= e->data.arc.endAng) {
+
+            // Normalize angle into [0, 2π)
+            if (ang < 0) ang += 2*M_PI;
+
+            double a1 = e->data.arc.startAng;
+            double sweep = e->data.arc.sweepAng;
+            double a2 = a1 + sweep;
+
+            // Normalize start and end
+            while (a1 < 0) a1 += 2*M_PI;
+            while (a1 >= 2*M_PI) a1 -= 2*M_PI;
+            while (a2 < 0) a2 += 2*M_PI;
+            while (a2 >= 2*M_PI) a2 -= 2*M_PI;
+
+            int onArc = 0;
+            if (sweep >= 0) {
+                // CCW arc
+                double span = sweep;
+                if (span < 0) span += 2*M_PI;
+                double rel = ang - a1;
+                if (rel < 0) rel += 2*M_PI;
+                if (rel <= span) onArc = 1;
+            } else {
+                // CW arc
+                double span = -sweep;
+                if (span < 0) span += 2*M_PI;
+                double rel = a1 - ang;
+                if (rel < 0) rel += 2*M_PI;
+                if (rel <= span) onArc = 1;
+            }
+
+            if (onArc) {
                 d = fabs(r - e->data.arc.r);
             }
+        }
+        else if (e->type == ENTITY_RECT) {
+            // Rectangle edges
+            double x1 = e->data.rect.x1;
+            double y1 = e->data.rect.y1;
+            double x2 = e->data.rect.x2;
+            double y2 = e->data.rect.y2;
+
+            // distance to 4 sides
+            double d1 = point_seg_dist(click_x, click_y, x1, y1, x2, y1);
+            double d2 = point_seg_dist(click_x, click_y, x2, y1, x2, y2);
+            double d3 = point_seg_dist(click_x, click_y, x2, y2, x1, y2);
+            double d4 = point_seg_dist(click_x, click_y, x1, y2, x1, y1);
+            d = fmin(fmin(d1,d2), fmin(d3,d4));
         }
         else if (e->type == ENTITY_POLYLINE) {
             for (int i=0; i<e->data.pline.npts-1; i++) {
@@ -1107,7 +1188,7 @@ static Widget create_toolbar_from_file(Widget parent, const char *filename) {
 
     // Toolbar container: RowColumn horizontal
     Widget toolbar = XmCreateRowColumn(parent, "toolBar", NULL, 0);
-    XtVaSetValues(toolbar, XmNorientation, XmHORIZONTAL, XmNpacking, XmPACK_TIGHT, XmNspacing, 4, NULL);
+    XtVaSetValues(toolbar, XmNorientation, XmHORIZONTAL, XmNpacking, XmPACK_TIGHT, XmNspacing, 0, NULL);
 
     // Load atlas once at startup
     load_icon_atlas(XtDisplay(parent), DefaultRootWindow(XtDisplay(parent)),
@@ -1174,6 +1255,11 @@ void ps_wait_click_(int *x, int *y) {
 
 void ps_draw_line_(double *x1, double *y1, double *x2, double *y2) {
     add_line(*x1, *y1, *x2, *y2);
+    redraw(app.drawArea, NULL, NULL);
+}
+
+void ps_draw_rect_(double *x1, double *y1, double *x2, double *y2) {
+    add_rect(*x1, *y1, *x2, *y2);
     redraw(app.drawArea, NULL, NULL);
 }
 
@@ -1374,7 +1460,7 @@ static void draw_rubberband(Display *dpy, Window win, GC gc,
     // Convert all world coords to screen
     XPoint *pts = malloc((npoints + 1) * sizeof(XPoint));
     int sx, sy;
-    for (int i = 0; i < npoints-1; i++) {
+    for (int i = 0; i < npoints; i++) {
         world_to_screen(px[i], py[i], &sx, &sy);
     // Add the current mouse pos as the last "floating" point
         pts[i].x = (short) sx;
@@ -1386,10 +1472,97 @@ static void draw_rubberband(Display *dpy, Window win, GC gc,
 
 
     // Draw polyline
-    if (npoints < 3){
+    if((current_entity_mode == ENTITY_RECT)&&(npoints==1)) {
+        // Rubber-band rectangle
+        int rx = (sx < mx) ? sx : mx;
+        int ry = (sy < my) ? sy : my;
+        int rw = abs(mx - sx);
+        int rh = abs(my - sy);
+        XDrawRectangle(dpy, win, gc, rx, ry, rw, rh);
+    }else if ((current_entity_mode == ENTITY_LINE)||(npoints==1)){
         //XDrawLines(dpy, win, gc, pts, npoints, CoordModeOrigin);
         XDrawLine(dpy, win, gc, sx, sy, mx, my);
-    } else { 
+    } else if ((current_entity_mode == ENTITY_ARC)&& (npoints==2)){
+        // Rubber band arc: 2 fixed points + current mouse point
+        double x1 = px[0], y1 = py[0];
+        double x2 = px[1], y2 = py[1];
+        double x3, y3;
+        screen_to_world(mx, my, &x3, &y3);
+
+        double cx, cy, r, a1, a2, am;
+        if (circle_from_3pts(x1, y1, x2, y2, x3, y3,
+                            &cx, &cy, &r, &a1, &a2, &am)) {
+
+            int scx, scy;
+            world_to_screen(cx, cy, &scx, &scy);
+            int sr = (int)(r * view.scale);
+
+            // normalize to [0,2π)
+            if (a1 < 0) a1 += 2*M_PI;
+            if (a2 < 0) a2 += 2*M_PI;
+            if (am < 0) am += 2*M_PI;
+
+            double span = a2 - a1;
+            if (span < 0) span += 2*M_PI;
+
+            double rel = am - a1;
+            if (rel < 0) rel += 2*M_PI;
+
+            // If middle point not between a1→a2, reverse
+            if (!(rel > 0 && rel < span)) {
+                double tmp = a1;
+                a1 = a2;
+                a2 = tmp;
+                span = 2*M_PI - span;
+            }
+
+            // Convert to X11 units (counterclockwise from 3 o'clock, degrees*64)
+            int sStartAng = (int)(a1 * 180.0 / M_PI * 64);
+            int sSpanAng  = (int)(span * 180.0 / M_PI * 64);
+
+            int sx = scx - sr;
+            int sy = scy - sr;
+            int sw = sr * 2;
+            int sh = sr * 2;
+
+            XDrawArc(dpy, win, gc, sx, sy, sw, sh, sStartAng, sSpanAng);
+        }    
+    } else if (current_entity_mode == ENTITY_POLYLINE) {
+    // Build a temporary Entity-like polyline
+    Entity e;
+    e.type = ENTITY_POLYLINE;
+    e.data.pline.npts = npoints + 1;   // include floating mouse point
+    e.data.pline.x = malloc(sizeof(double) * e.data.pline.npts);
+    e.data.pline.y = malloc(sizeof(double) * e.data.pline.npts);
+
+    // Copy fixed vertices
+    for (int i = 0; i < npoints; i++) {
+        e.data.pline.x[i] = px[i];
+        e.data.pline.y[i] = py[i];
+    }
+
+    // Append floating last mouse position (convert screen → world first)
+    double wx, wy;
+    screen_to_world(mx, my, &wx, &wy);
+    e.data.pline.x[npoints] = wx;
+    e.data.pline.y[npoints] = wy;
+
+    // Draw polyline preview
+    if (e.data.pline.npts > 1) {
+        XPoint *pts = malloc(e.data.pline.npts * sizeof(XPoint));
+        for (int i = 0; i < e.data.pline.npts; i++) {
+            int sx, sy;
+            world_to_screen(e.data.pline.x[i], e.data.pline.y[i], &sx, &sy);
+            pts[i].x = (short)sx;
+            pts[i].y = (short)sy;
+        }
+        XDrawLines(dpy, win, gc, pts, e.data.pline.npts, CoordModeOrigin);
+        free(pts);
+    }
+
+    free(e.data.pline.x);
+    free(e.data.pline.y);
+    }else if (current_entity_mode == ENTITY_SPLINE){ 
         // Build a temporary Entity-like spline
         Entity e;
         e.type = ENTITY_SPLINE;
@@ -1447,11 +1620,13 @@ void ps_getpoint_(char *prompt, double *x, double *y,
     double x1 = 0, y1 = 0;
     bool has_base = (*has_start != 0);
     if (has_base) { 
-        x1 = *x; 
-        y1 = *y; 
-        rubber_x[0] = x1;
-        rubber_y[0] = y1;
-        rubber_count++;
+        //if (rubber_count==0){
+            x1 = *x; 
+            y1 = *y; 
+            rubber_x[rubber_count] = x1;
+            rubber_y[rubber_count] = y1;
+            rubber_count++;
+        //}
     }
 
     XEvent event;
@@ -1475,9 +1650,14 @@ void ps_getpoint_(char *prompt, double *x, double *y,
                 if (rubber_count < MAX_TEMP_POINTS) {
                     rubber_x[rubber_count] = *x;
                     rubber_y[rubber_count] = *y;
-                    rubber_count++;
+                    //rubber_count++;
                 }
                 *has_start = 1;
+                if(((current_entity_mode == ENTITY_ARC) && (rubber_count==2))||
+                    ((current_entity_mode == ENTITY_RECT) && (rubber_count==1))) {
+                    // Arc needs 3 points: start, end, and a third point to define curvature
+                    rubber_count=0;
+                } 
                 done = true;
             }
             else if (event.xbutton.button == Button3) {   // right click = cancel
@@ -1577,6 +1757,9 @@ void ps_save_entities_(char *filename, int filename_len) {
             case ENTITY_LINE:
                 fwrite(&e->data.line, sizeof(LineEntity), 1, f);
                 break;
+            case ENTITY_RECT:
+                fwrite(&e->data.rect, sizeof(RectEntity), 1, f);
+                break;
             case ENTITY_ARC:
                 fwrite(&e->data.arc, sizeof(ArcEntity), 1, f);
                 break;
@@ -1626,7 +1809,12 @@ void ps_load_entities_(char *filename, int filename_len) {
         } else if (type == ENTITY_ARC) {
             ArcEntity arc;
             if (fread(&arc, sizeof(ArcEntity), 1, f) == 1)
-                add_arc(arc.cx, arc.cy, arc.r, arc.startAng, arc.endAng);
+                add_arc(arc.cx, arc.cy, arc.r, arc.startAng, arc.sweepAng);
+
+        } else if (type == ENTITY_RECT) {
+            RectEntity rect;
+            if (fread(&rect, sizeof(RectEntity), 1, f) == 1)
+                add_rect(rect.x1, rect.y1, rect.x2, rect.y2);
 
         } else if (type == ENTITY_POLYLINE) {
             int n;
@@ -1714,4 +1902,116 @@ void ps_new_drawing_() {
     redraw(app.drawArea, NULL, NULL);
     set_window_title(current_filename);
 }
+
+// Helper: compute circle through 3 points
+static int circle_from_3pts(double x1, double y1,
+                            double x2, double y2,
+                            double x3, double y3,
+                            double *cx, double *cy, double *r,
+                            double *ang1, double *ang2, double *angm)
+{
+    double a = x1*(y2-y3) - y1*(x2-x3) + x2*y3 - x3*y2;
+    if (fabs(a) < 1e-12) return 0; // points are collinear
+
+    double b = -( (x1*x1 + y1*y1)*(y3-y2) +
+                 (x2*x2 + y2*y2)*(y1-y3) +
+                 (x3*x3 + y3*y3)*(y2-y1) ) / (2*a);
+
+    double c = -( (x1*x1 + y1*y1)*(x2-x3) +
+                 (x2*x2 + y2*y2)*(x3-x1) +
+                 (x3*x3 + y3*y3)*(x1-x2) ) / (2*a);
+
+    *cx = b;
+    *cy = c;
+
+    *r = hypot(x1 - *cx, y1 - *cy);
+
+    *ang1 = atan2(y1 - *cy, x1 - *cx);
+    *angm = atan2(y2 - *cy, x2 - *cx);
+    *ang2 = atan2(y3 - *cy, x3 - *cx);
+
+    return 1;
+}
+
+void ps_draw_arc_(double *x1, double *y1,
+                  double *x2, double *y2,
+                  double *x3, double *y3)
+{
+    double cx, cy, r, a1, a2, am;
+    if (!circle_from_3pts(*x1, *y1, *x2, *y2, *x3, *y3,
+                          &cx, &cy, &r, &a1, &a2, &am))
+        return;
+
+    // normalize into [0, 2π)
+    if (a1 < 0) a1 += 2*M_PI;
+    if (a2 < 0) a2 += 2*M_PI;
+    if (am < 0) am += 2*M_PI;
+
+    double sweep = a2 - a1;
+    if (sweep <= -M_PI*2) sweep += 2*M_PI;
+    if (sweep >=  M_PI*2) sweep -= 2*M_PI;
+
+    // check if middle angle lies between a1 and a1+sweep (CCW case)
+    double rel = am - a1;
+    if (rel < 0) rel += 2*M_PI;
+
+    double span = sweep;
+    if (span < 0) span += 2*M_PI;
+
+    int passes_mid = (rel > 0 && rel < span);
+
+    if (!passes_mid) {
+        // reverse direction
+        if (sweep > 0)
+            sweep = sweep - 2*M_PI; // go CW instead
+        else
+            sweep = sweep + 2*M_PI; // go CCW instead
+    }
+
+    // Store entity with (startAng, sweepAng)
+    add_arc(cx, cy, r, a1, sweep);
+
+    redraw(app.drawArea, NULL, NULL);
+}
+
+void ps_set_entity_mode_(char *mode, int len)
+{
+    char buf[32];
+    int n = (len < 31) ? len : 31;
+    strncpy(buf, mode, n);
+    buf[n] = '\0';
+
+    // 去掉尾端空白 (Fortran style)
+    for (int i=n-1; i>=0 && buf[i]==' '; i--)
+        buf[i] = '\0';
+
+    if (strcasecmp(buf, "LINE") == 0) {
+        current_entity_mode = ENTITY_LINE;
+    }
+    else if (strcasecmp(buf, "ARC") == 0) {
+        current_entity_mode = ENTITY_ARC;
+    }
+    else if (strcasecmp(buf, "SPLINE") == 0) {
+        current_entity_mode = ENTITY_SPLINE;
+    }
+    else if (strcasecmp(buf, "RECT") == 0) {
+        current_entity_mode = ENTITY_RECT;
+    }
+    else if (strcasecmp(buf, "POLYLINE") == 0) {
+        current_entity_mode = ENTITY_POLYLINE;
+    }
+    else {
+        current_entity_mode = ENTITY_NONE;
+    }
+
+    printf("Entity mode set to %s\n", buf);
+}
+
+void ps_draw_polyline_(int *npts, double *x, double *y) {
+    if (*npts < 2) return;
+    add_polyline(*npts, x, y);
+    redraw(app.drawArea, NULL, NULL);
+}
+
+
 

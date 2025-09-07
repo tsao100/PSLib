@@ -17,10 +17,12 @@ typedef struct {
 
 // Entity Types
 typedef enum {
+    ENTITY_NONE,
     ENTITY_LINE,
     ENTITY_ARC,
     ENTITY_POLYLINE,
-    ENTITY_SPLINE
+    ENTITY_SPLINE,
+    ENTITY_RECT
 } EntityType;
 
 // Entity Structures
@@ -32,8 +34,12 @@ typedef struct {
     double cx, cy;    // center
     double r;         // radius
     double startAng;  // radians
-    double endAng;    // radians
+    double sweepAng;  // sweep Angle radians
 } ArcEntity;
+
+typedef struct {
+    double x1, y1, x2, y2;   // diagonal corners
+} RectEntity;
 
 typedef struct {
     int npts;
@@ -55,6 +61,7 @@ typedef struct Entity {
         ArcEntity arc;
         PolylineEntity pline;
         SplineEntity spline;
+        RectEntity rect;
     } data;
     struct Entity *next;
 } Entity;
@@ -120,8 +127,10 @@ int ps_knots_equal_(double *x, double *y);
 // Entity Management Functions
 Entity* add_line(double x1, double y1, double x2, double y2);
 Entity* add_arc(double cx, double cy, double r, double a1, double a2);
+Entity* add_rect(double x1, double y1, double x2, double y2);
 Entity* add_polyline(int npts, double *x, double *y);
 Entity* add_spline(double *ctrlx, double *ctrly, int n_ctrlp, int degree);
+void ps_set_entity_mode_(char *mode, int len);
 void delete_entity(Entity *target);
 
 // Coordinate Transformation Functions
@@ -149,10 +158,20 @@ void toolbar_button_cb(Widget w, XtPointer client_data, XtPointer call_data);
 static void command_input_cb(Widget w, XtPointer client_data, XtPointer call_data);
 void protect_prompt_cb(Widget w, XtPointer client_data, XtPointer call_data);
 
+// Helper: compute circle through 3 points
+static int circle_from_3pts(double x1, double y1,
+                            double x2, double y2,
+                            double x3, double y3,
+                            double *cx, double *cy, double *r,
+                            double *ang1, double *ang2, double *angm);
+
 // GUI Functions (Fortran-callable)
 void start_gui_();
 void ps_wait_click_(int *x, int *y);
 void ps_draw_line_(double *x1, double *y1, double *x2, double *y2);
+void ps_draw_arc_(double *x1, double *y1, double *x2, double *y2, double *x3, double *y3);
+void ps_draw_rect_(double *x1, double *y1, double *x2, double *y2);
+void ps_draw_polyline_(int *npts, double *x, double *y);
 void ps_draw_spline_(double *ctrlp, int *n_ctrlp, int *degree, int *dim, int *type, int *status);
 void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt_len);
 
