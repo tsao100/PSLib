@@ -1933,6 +1933,7 @@ static int circle_from_3pts(double x1, double y1,
     return 1;
 }
 
+// Draw arc through 3 points (Fortran callable)
 void ps_draw_arc_(double *x1, double *y1,
                   double *x2, double *y2,
                   double *x3, double *y3)
@@ -1942,30 +1943,24 @@ void ps_draw_arc_(double *x1, double *y1,
                           &cx, &cy, &r, &a1, &a2, &am))
         return;
 
-    // normalize into [0, 2π)
-    if (a1 < 0) a1 += 2*M_PI;
-    if (a2 < 0) a2 += 2*M_PI;
-    if (am < 0) am += 2*M_PI;
+    // Normalize into [0, 2π)
+    if (a1 < 0) a1 += 2 * M_PI;
+    if (a2 < 0) a2 += 2 * M_PI;
+    if (am < 0) am += 2 * M_PI;
 
+    // Base sweep (unsigned)
     double sweep = a2 - a1;
-    if (sweep <= -M_PI*2) sweep += 2*M_PI;
-    if (sweep >=  M_PI*2) sweep -= 2*M_PI;
+    if (sweep < 0) sweep += 2 * M_PI;
 
-    // check if middle angle lies between a1 and a1+sweep (CCW case)
-    double rel = am - a1;
-    if (rel < 0) rel += 2*M_PI;
+    // --- Orientation check using TinySpline cross product ---
+    tsReal v1[3] = { *x2 - *x1, *y2 - *y1, 0.0 };
+    tsReal v2[3] = { *x3 - *x1, *y3 - *y1, 0.0 };
+    tsReal cross[3];
+    ts_vec3_cross(v1, v2, cross);
 
-    double span = sweep;
-    if (span < 0) span += 2*M_PI;
-
-    int passes_mid = (rel > 0 && rel < span);
-
-    if (!passes_mid) {
-        // reverse direction
-        if (sweep > 0)
-            sweep = sweep - 2*M_PI; // go CW instead
-        else
-            sweep = sweep + 2*M_PI; // go CCW instead
+    if (cross[2] < 0) {
+        // Clockwise: negate sweep
+        sweep = -(2 * M_PI - sweep);
     }
 
     // Store entity with (startAng, sweepAng)
