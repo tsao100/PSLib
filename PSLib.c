@@ -1192,7 +1192,7 @@ static Widget create_toolbar_from_file(Widget parent, const char *filename) {
 
     // Load atlas once at startup
     load_icon_atlas(XtDisplay(parent), DefaultRootWindow(XtDisplay(parent)),
-                "icons/icons.png", 32, 32);
+                "icons/icons.png", 16, 16);
 
 
     char line[256];
