@@ -22,6 +22,7 @@ typedef enum {
     ENTITY_ARC,
     ENTITY_POLYLINE,
     ENTITY_SPLINE,
+    ENTITY_CIRCLE,
     ENTITY_RECT
 } EntityType;
 
@@ -48,6 +49,10 @@ typedef struct {
 } PolylineEntity;
 
 typedef struct {
+    double cx, cy, r;
+} CircleEntity;
+
+typedef struct {
     int n_ctrlp;       // number of control points
     double *x;         // x coordinates
     double *y;         // y coordinates
@@ -60,6 +65,7 @@ typedef struct Entity {
         LineEntity line;
         ArcEntity arc;
         PolylineEntity pline;
+        CircleEntity circle;
         SplineEntity spline;
         RectEntity rect;
     } data;
@@ -130,6 +136,7 @@ Entity* add_arc(double cx, double cy, double r, double a1, double a2);
 Entity* add_rect(double x1, double y1, double x2, double y2);
 Entity* add_polyline(int npts, double *x, double *y);
 Entity* add_spline(double *ctrlx, double *ctrly, int n_ctrlp, int degree);
+Entity* add_circle(double cx, double cy, double r);
 void ps_set_entity_mode_(char *mode, int len);
 void delete_entity(Entity *target);
 
@@ -173,6 +180,7 @@ void ps_draw_arc_(double *x1, double *y1, double *x2, double *y2, double *x3, do
 void ps_draw_rect_(double *x1, double *y1, double *x2, double *y2);
 void ps_draw_polyline_(int *npts, double *x, double *y);
 void ps_draw_spline_(double *ctrlp, int *n_ctrlp, int *degree, int *dim, int *type, int *status);
+void ps_draw_circle_(double *cx, double *cy, double *r);
 void ps_getpoint_(char *prompt, double *x, double *y, int *has_start, int prompt_len);
 
 // File I/O Functions (Fortran-callable)

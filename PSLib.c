@@ -416,6 +416,18 @@ Entity* add_spline(double *ctrlx, double *ctrly, int n_ctrlp, int degree) {
     return e;
 }
 
+Entity* add_circle(double cx, double cy, double r) {
+    Entity *e = (Entity *)malloc(sizeof(Entity));
+    e->type = ENTITY_CIRCLE;
+    e->data.circle.cx = cx;
+    e->data.circle.cy = cy;
+    e->data.circle.r = r;
+    e->next = entity_list;
+    entity_list = e;
+    return e;
+}
+
+
 
 static AppWidgets app;
 static ViewState view = {400.0, 300.0, 1.0, 0, 0, 0, NULL};
@@ -740,7 +752,13 @@ void redraw(Widget w, XtPointer client_data, XtPointer call_data) {
                 }
             }
             if (samples) free(samples);
+        }else if (e->type == ENTITY_CIRCLE) {
+            int scx, scy;
+            world_to_screen(e->data.circle.cx, e->data.circle.cy, &scx, &scy);
+            int rr = (int)(e->data.circle.r * view.scale);
+            XDrawArc(dpy, win, gc, scx - rr, scy - rr, 2*rr, 2*rr, 0, 360*64);
         }
+
         e = e->next;
     }
 
@@ -934,7 +952,18 @@ void ps_entsel_(double *wx, double *wy, int *found) {
                 }
             }
             if (samples) free(samples);
+        }else if (e->type == ENTITY_CIRCLE) {
+            double cx = e->data.circle.cx;
+            double cy = e->data.circle.cy;
+            double r  = e->data.circle.r;
+
+            // distance from click to center
+            double dist = hypot(click_x - cx, click_y - cy);
+
+            // pick distance = how far from circle perimeter
+            d = fabs(dist - r);
         }
+
 
         if (d < best_dist && d < tol) {
             best = e;
@@ -1306,6 +1335,12 @@ void ps_draw_spline_(double *ctrlp, int *n_ctrlp, int *degree, int *dim, int *ty
     redraw(app.drawArea, NULL, NULL);
 }
 
+void ps_draw_circle_(double *cx, double *cy, double *r) {
+    add_circle(*cx, *cy, *r);
+    redraw(app.drawArea, NULL, NULL);
+}
+
+
 static void set_window_title(const char *fname) {
     if (!app.top) return;
     char buf[512];
@@ -1479,10 +1514,10 @@ static void draw_rubberband(Display *dpy, Window win, GC gc,
         int rw = abs(mx - sx);
         int rh = abs(my - sy);
         XDrawRectangle(dpy, win, gc, rx, ry, rw, rh);
-    }else if ((current_entity_mode == ENTITY_LINE)||(npoints==1)){
+    }if ((current_entity_mode == ENTITY_LINE)||(npoints==1)){
         //XDrawLines(dpy, win, gc, pts, npoints, CoordModeOrigin);
         XDrawLine(dpy, win, gc, sx, sy, mx, my);
-    } else if ((current_entity_mode == ENTITY_ARC)&& (npoints==2)){
+    }if ((current_entity_mode == ENTITY_ARC)&& (npoints==2)){
         // Rubber band arc: 2 fixed points + current mouse point
         double x1 = px[0], y1 = py[0];
         double x2 = px[1], y2 = py[1];
@@ -1527,42 +1562,42 @@ static void draw_rubberband(Display *dpy, Window win, GC gc,
 
             XDrawArc(dpy, win, gc, sx, sy, sw, sh, sStartAng, sSpanAng);
         }    
-    } else if (current_entity_mode == ENTITY_POLYLINE) {
-    // Build a temporary Entity-like polyline
-    Entity e;
-    e.type = ENTITY_POLYLINE;
-    e.data.pline.npts = npoints + 1;   // include floating mouse point
-    e.data.pline.x = malloc(sizeof(double) * e.data.pline.npts);
-    e.data.pline.y = malloc(sizeof(double) * e.data.pline.npts);
+    }if (current_entity_mode == ENTITY_POLYLINE) {
+        // Build a temporary Entity-like polyline
+        Entity e;
+        e.type = ENTITY_POLYLINE;
+        e.data.pline.npts = npoints + 1;   // include floating mouse point
+        e.data.pline.x = malloc(sizeof(double) * e.data.pline.npts);
+        e.data.pline.y = malloc(sizeof(double) * e.data.pline.npts);
 
-    // Copy fixed vertices
-    for (int i = 0; i < npoints; i++) {
-        e.data.pline.x[i] = px[i];
-        e.data.pline.y[i] = py[i];
-    }
-
-    // Append floating last mouse position (convert screen → world first)
-    double wx, wy;
-    screen_to_world(mx, my, &wx, &wy);
-    e.data.pline.x[npoints] = wx;
-    e.data.pline.y[npoints] = wy;
-
-    // Draw polyline preview
-    if (e.data.pline.npts > 1) {
-        XPoint *pts = malloc(e.data.pline.npts * sizeof(XPoint));
-        for (int i = 0; i < e.data.pline.npts; i++) {
-            int sx, sy;
-            world_to_screen(e.data.pline.x[i], e.data.pline.y[i], &sx, &sy);
-            pts[i].x = (short)sx;
-            pts[i].y = (short)sy;
+        // Copy fixed vertices
+        for (int i = 0; i < npoints; i++) {
+            e.data.pline.x[i] = px[i];
+            e.data.pline.y[i] = py[i];
         }
-        XDrawLines(dpy, win, gc, pts, e.data.pline.npts, CoordModeOrigin);
-        free(pts);
-    }
 
-    free(e.data.pline.x);
-    free(e.data.pline.y);
-    }else if (current_entity_mode == ENTITY_SPLINE){ 
+        // Append floating last mouse position (convert screen → world first)
+        double wx, wy;
+        screen_to_world(mx, my, &wx, &wy);
+        e.data.pline.x[npoints] = wx;
+        e.data.pline.y[npoints] = wy;
+
+        // Draw polyline preview
+        if (e.data.pline.npts > 1) {
+            XPoint *pts = malloc(e.data.pline.npts * sizeof(XPoint));
+            for (int i = 0; i < e.data.pline.npts; i++) {
+                int sx, sy;
+                world_to_screen(e.data.pline.x[i], e.data.pline.y[i], &sx, &sy);
+                pts[i].x = (short)sx;
+                pts[i].y = (short)sy;
+            }
+            XDrawLines(dpy, win, gc, pts, e.data.pline.npts, CoordModeOrigin);
+            free(pts);
+        }
+
+        free(e.data.pline.x);
+        free(e.data.pline.y);
+    }if (current_entity_mode == ENTITY_SPLINE){ 
         // Build a temporary Entity-like spline
         Entity e;
         e.type = ENTITY_SPLINE;
@@ -1600,6 +1635,12 @@ static void draw_rubberband(Display *dpy, Window win, GC gc,
 
         free(e.data.spline.x);
         free(e.data.spline.y);
+    }
+    if ((current_entity_mode == ENTITY_CIRCLE)&&(npoints==1)){
+        int dx = mx - sx;
+        int dy = my - sy;
+        int r = (int) sqrt(dx*dx + dy*dy);
+        XDrawArc(dpy, win, gc, sx - r, sy - r, 2*r, 2*r, 0, 360*64);
     }
 
     free(pts);
@@ -1994,6 +2035,9 @@ void ps_set_entity_mode_(char *mode, int len)
     }
     else if (strcasecmp(buf, "POLYLINE") == 0) {
         current_entity_mode = ENTITY_POLYLINE;
+    }
+    else if (strcasecmp(buf, "CIRCLE") == 0) {
+        current_entity_mode = ENTITY_CIRCLE;
     }
     else {
         current_entity_mode = ENTITY_NONE;

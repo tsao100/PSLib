@@ -1,6 +1,7 @@
       PROGRAM PSLIB_TEST
         EXTERNAL START_GUI, REGISTER_ACTION
         EXTERNAL ON_LINE, ON_SPLINE, ON_ARC, ON_RECT, ON_POLYLINE
+        EXTERNAL ON_CIRCLE
         EXTERNAL ON_SAVE, ON_LOAD
         EXTERNAL ON_NEW, ON_SAVE_AS
 
@@ -9,6 +10,7 @@
         CALL REGISTER_ACTION('RECT',  ON_RECT)
         CALL REGISTER_ACTION('POLYLINE', ON_POLYLINE)
         CALL REGISTER_ACTION('SPLINE', ON_SPLINE)
+        CALL REGISTER_ACTION('CIRCLE', ON_CIRCLE)
 
         CALL REGISTER_ACTION('NEW',  ON_NEW)
         CALL REGISTER_ACTION('OPEN', ON_LOAD)
@@ -200,6 +202,33 @@ C --- Draw polyline from collected points ---
 
         RETURN
       END
+
+      SUBROUTINE ON_CIRCLE
+        EXTERNAL PS_GETPOINT, PS_DRAW_CIRCLE
+        DOUBLE PRECISION XC, YC, XR, YR, R
+        INTEGER HAS_START
+
+        CALL PS_SET_ENTITY_MODE('CIRCLE')
+
+        PRINT *, 'Click center point...'
+        HAS_START = 0
+        CALL PS_GETPOINT('Click center point...', XC, YC, HAS_START)
+
+        PRINT *, 'Click point on circle or press Enter for radius:'
+
+C --- Option 1: click second point
+        XR = XC
+        YR = YC
+        HAS_START = 1
+        CALL PS_GETPOINT('Click point on circle...', XR, YR, HAS_START)
+
+        R = SQRT((XR - XC)**2 + (YR - YC)**2)
+
+        CALL PS_DRAW_CIRCLE(XC, YC, R)
+
+        PRINT *, 'Circle drawn. Center=', XC, YC, '  Radius=', R
+      END
+
 
 
 
