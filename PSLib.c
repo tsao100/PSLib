@@ -1514,53 +1514,60 @@ static void draw_rubberband(Display *dpy, Window win, GC gc,
         int rw = abs(mx - sx);
         int rh = abs(my - sy);
         XDrawRectangle(dpy, win, gc, rx, ry, rw, rh);
-    }if ((current_entity_mode == ENTITY_LINE)||(npoints==1)){
+    }if ((current_entity_mode == ENTITY_LINE)&&(npoints>0)){
         //XDrawLines(dpy, win, gc, pts, npoints, CoordModeOrigin);
         XDrawLine(dpy, win, gc, sx, sy, mx, my);
-    }if ((current_entity_mode == ENTITY_ARC)&& (npoints==2)){
-        // Rubber band arc: 2 fixed points + current mouse point
-        double x1 = px[0], y1 = py[0];
-        double x2 = px[1], y2 = py[1];
-        double x3, y3;
-        screen_to_world(mx, my, &x3, &y3);
+    }if (current_entity_mode == ENTITY_ARC){
+        if (npoints == 1) {
+            // Rubber band line: 1 fixed point + current mouse point
+            XDrawLine(dpy, win, gc, pts[0].x, pts[0].y, pts[1].x, pts[1].y);
+        }
+        // Draw arc preview if we have 2 fixed points + current mouse point
+        if (npoints == 2) {
+            // Rubber band arc: 2 fixed points + current mouse point
+            double x1 = px[0], y1 = py[0];
+            double x2 = px[1], y2 = py[1];
+            double x3, y3;
+            screen_to_world(mx, my, &x3, &y3);
 
-        double cx, cy, r, a1, a2, am;
-        if (circle_from_3pts(x1, y1, x2, y2, x3, y3,
-                            &cx, &cy, &r, &a1, &a2, &am)) {
+            double cx, cy, r, a1, a2, am;
+            if (circle_from_3pts(x1, y1, x2, y2, x3, y3,
+                                &cx, &cy, &r, &a1, &a2, &am)) {
 
-            int scx, scy;
-            world_to_screen(cx, cy, &scx, &scy);
-            int sr = (int)(r * view.scale);
+                int scx, scy;
+                world_to_screen(cx, cy, &scx, &scy);
+                int sr = (int)(r * view.scale);
 
-            // normalize to [0,2π)
-            if (a1 < 0) a1 += 2*M_PI;
-            if (a2 < 0) a2 += 2*M_PI;
-            if (am < 0) am += 2*M_PI;
+                // normalize to [0,2π)
+                if (a1 < 0) a1 += 2*M_PI;
+                if (a2 < 0) a2 += 2*M_PI;
+                if (am < 0) am += 2*M_PI;
 
-            double span = a2 - a1;
-            if (span < 0) span += 2*M_PI;
+                double span = a2 - a1;
+                if (span < 0) span += 2*M_PI;
 
-            double rel = am - a1;
-            if (rel < 0) rel += 2*M_PI;
+                double rel = am - a1;
+                if (rel < 0) rel += 2*M_PI;
 
-            // If middle point not between a1→a2, reverse
-            if (!(rel > 0 && rel < span)) {
-                double tmp = a1;
-                a1 = a2;
-                a2 = tmp;
-                span = 2*M_PI - span;
+                // If middle point not between a1→a2, reverse
+                if (!(rel > 0 && rel < span)) {
+                    double tmp = a1;
+                    a1 = a2;
+                    a2 = tmp;
+                    span = 2*M_PI - span;
+                }
+
+                // Convert to X11 units (counterclockwise from 3 o'clock, degrees*64)
+                int sStartAng = (int)(a1 * 180.0 / M_PI * 64);
+                int sSpanAng  = (int)(span * 180.0 / M_PI * 64);
+
+                int sx = scx - sr;
+                int sy = scy - sr;
+                int sw = sr * 2;
+                int sh = sr * 2;
+
+                XDrawArc(dpy, win, gc, sx, sy, sw, sh, sStartAng, sSpanAng);
             }
-
-            // Convert to X11 units (counterclockwise from 3 o'clock, degrees*64)
-            int sStartAng = (int)(a1 * 180.0 / M_PI * 64);
-            int sSpanAng  = (int)(span * 180.0 / M_PI * 64);
-
-            int sx = scx - sr;
-            int sy = scy - sr;
-            int sw = sr * 2;
-            int sh = sr * 2;
-
-            XDrawArc(dpy, win, gc, sx, sy, sw, sh, sStartAng, sSpanAng);
         }    
     }if (current_entity_mode == ENTITY_POLYLINE) {
         // Build a temporary Entity-like polyline
@@ -1640,6 +1647,7 @@ static void draw_rubberband(Display *dpy, Window win, GC gc,
         int dx = mx - sx;
         int dy = my - sy;
         int r = (int) sqrt(dx*dx + dy*dy);
+        XDrawLine(dpy, win, gc, sx, sy, mx, my);
         XDrawArc(dpy, win, gc, sx - r, sy - r, 2*r, 2*r, 0, 360*64);
     }
 
@@ -1695,7 +1703,8 @@ void ps_getpoint_(char *prompt, double *x, double *y,
                 }
                 *has_start = 1;
                 if(((current_entity_mode == ENTITY_ARC) && (rubber_count==2))||
-                    ((current_entity_mode == ENTITY_RECT) && (rubber_count==1))) {
+                    ((current_entity_mode == ENTITY_RECT) && (rubber_count==1))||
+                    ((current_entity_mode == ENTITY_CIRCLE) && (rubber_count==1))) {
                     // Arc needs 3 points: start, end, and a third point to define curvature
                     rubber_count=0;
                 } 
